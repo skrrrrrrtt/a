@@ -1,0 +1,160 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+-- // UI Configuration
+local Theme = {
+    Background = Color3.fromRGB(10, 10, 10),
+    Accent = Color3.fromRGB(255, 170, 0), -- Orange/Gold
+    CardBG = Color3.fromRGB(15, 15, 15),
+    Text = Color3.fromRGB(255, 255, 255)
+}
+
+-- // Data Mapping (Item IDs from PS99)
+local TrackedItems = {
+    {Name = "Diamonds", ID = "Diamonds"},
+    {Name = "Spring Egg Token", ID = "Spring Egg Token"},
+    {Name = "Spring Bluebell Token", ID = "Spring Bluebell Token"},
+    {Name = "Spring Red Tulip Token", ID = "Spring Red Tulip Token"},
+    {Name = "Spring Pink Rose Token", ID = "Spring Pink Rose Token"},
+    {Name = "Spring Yellow Sunflower Token", ID = "Spring Yellow Sunflower Token"},
+    {Name = "Huge Dawn Phoenix", ID = "Huge Dawn Phoenix", IsPet = true},
+    {Name = "Huge Diamond Chick", ID = "Huge Diamond Chick", IsPet = true},
+    {Name = "Titanic Diamond Chick", ID = "Titanic Diamond Chick", IsPet = true}
+}
+
+-- // Helper: Format Numbers (e.g., 2.5K)
+local function FormatNumber(n)
+    if n >= 1000000 then
+        return string.format("%.1fM", n / 1000000):gsub("%.", ",")
+    elseif n >= 1000 then
+        return string.format("%.1fK", n / 1000):gsub("%.", ",")
+    end
+    return tostring(n)
+end
+
+-- // Helper: Get Save Data (PS99 specific)
+local function GetSave()
+    local Save = require(ReplicatedStorage.Library.Client.Save)
+    return Save.Get()
+end
+
+-- // Create UI
+local ScreenGui = Instance.new("ScreenGui", Players.LocalPlayer:WaitForChild("PlayerGui"))
+ScreenGui.Name = "ZapHub_Easter"
+ScreenGui.IgnoreGuiInset = true
+
+local MainFrame = Instance.new("Frame", ScreenGui)
+MainFrame.Size = UDim2.new(1, 0, 1, 0)
+MainFrame.BackgroundColor3 = Theme.Background
+MainFrame.BorderSizePixel = 0
+
+-- Header
+local Title = Instance.new("TextLabel", MainFrame)
+Title.Text = "ZapHub"
+Title.TextColor3 = Theme.Accent
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 35
+Title.Position = UDim2.new(0, 50, 0, 50)
+Title.Size = UDim2.new(0, 200, 0, 50)
+Title.BackgroundTransparency = 1
+
+local EventTitle = Instance.new("TextLabel", MainFrame)
+EventTitle.Text = "Easter 2026"
+EventTitle.TextColor3 = Color3.new(1,1,1)
+EventTitle.Font = Enum.Font.GothamBold
+EventTitle.TextSize = 50
+EventTitle.Position = UDim2.new(0.5, -200, 0, 100)
+EventTitle.Size = UDim2.new(0, 400, 0, 60)
+EventTitle.BackgroundTransparency = 1
+
+local PremiumSub = Instance.new("TextLabel", EventTitle)
+PremiumSub.Text = "Premium users only"
+PremiumSub.TextColor3 = Theme.Accent
+PremiumSub.Font = Enum.Font.GothamItalic
+PremiumSub.TextSize = 14
+PremiumSub.Position = UDim2.new(0, 0, 1, 0)
+PremiumSub.Size = UDim2.new(1, 0, 0, 20)
+PremiumSub.BackgroundTransparency = 1
+
+-- Container for Items
+local Container = Instance.new("ScrollingFrame", MainFrame)
+Container.Size = UDim2.new(0.8, 0, 0.6, 0)
+Container.Position = UDim2.new(0.1, 0, 0.3, 0)
+Container.BackgroundTransparency = 1
+Container.ScrollBarThickness = 2
+Container.CanvasSize = UDim2.new(0, 0, 0, #TrackedItems * 60)
+
+local UIListLayout = Instance.new("UIListLayout", Container)
+UIListLayout.Padding = UDim.new(0, 10)
+UIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+-- Generate Item Rows
+local Rows = {}
+
+for _, item in pairs(TrackedItems) do
+    local Row = Instance.new("Frame", Container)
+    Row.Size = UDim2.new(0.95, 0, 0, 50)
+    Row.BackgroundColor3 = Theme.CardBG
+    
+    local Stroke = Instance.new("UIStroke", Row)
+    Stroke.Color = Theme.Accent
+    Stroke.Thickness = 1
+    Stroke.Transparency = 0.5
+    
+    local Corner = Instance.new("UICorner", Row)
+    Corner.CornerRadius = UDim.new(0, 8)
+    
+    local Icon = Instance.new("ImageLabel", Row)
+    Icon.Size = UDim2.new(0, 40, 0, 40)
+    Icon.Position = UDim2.new(0, 5, 0.5, -20)
+    Icon.BackgroundTransparency = 1
+    -- Dynamic Icon Logic based on your request
+    -- Note: 'Id' and 'pt' would usually come from a loop of the library
+    Icon.Image = string.format("https://biggamesapi.io/image/%s", item.ID:gsub(" ", "")) 
+
+    local Label = Instance.new("TextLabel", Row)
+    Label.Name = "AmountLabel"
+    Label.Size = UDim2.new(1, -60, 1, 0)
+    Label.Position = UDim2.new(0, 60, 0, 0)
+    Label.Text = item.Name .. ": 0"
+    Label.TextColor3 = Theme.Text
+    Label.Font = Enum.Font.GothamBold
+    Label.TextSize = 18
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.BackgroundTransparency = 1
+    
+    Rows[item.Name] = Label
+end
+
+-- // Live Monitor Function
+task.spawn(function()
+    while true do
+        local Save = GetSave()
+        if Save then
+            local Inventory = Save.Inventory
+            
+            for _, itemData in pairs(TrackedItems) do
+                local count = 0
+                
+                if itemData.ID == "Diamonds" then
+                    count = Save.Diamonds or 0
+                else
+                    -- Search inventory for matches
+                    for _, v in pairs(Inventory) do
+                        if v.id == itemData.ID then
+                            count = count + (v._am or 1)
+                        end
+                    end
+                end
+                
+                if Rows[itemData.Name] then
+                    Rows[itemData.Name].Text = string.format("%s: %s", itemData.Name, FormatNumber(count))
+                end
+            end
+        end
+        task.wait(1) -- Update every second
+    end
+end)
+
+print("ZapHub UI Loaded Successfully")
