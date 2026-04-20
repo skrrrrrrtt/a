@@ -1,0 +1,161 @@
+-- // Services
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- // Variables
+local LocalPlayer = Players.LocalPlayer
+local PlayerSave = require(ReplicatedStorage.Library.Client.Save)
+local StartTime = os.time()
+
+-- // Cleanup
+if CoreGui:FindFirstChild("ZapHub_Final") then
+    CoreGui:FindFirstChild("ZapHub_Final"):Destroy()
+end
+
+-- // Configuration
+local TrackedItems = {
+    {Name = "Diamonds", ID = "Diamonds"},
+    {Name = "Spring Egg Token", ID = "Spring Egg Token"},
+    {Name = "Spring Bluebell Token", ID = "Spring Bluebell Token"},
+    {Name = "Spring Red Tulip Token", ID = "Spring Red Tulip Token"},
+    {Name = "Spring Pink Rose Token", ID = "Spring Pink Rose Token"},
+    {Name = "Spring Yellow Sunflower Token", ID = "Spring Yellow Sunflower Token"},
+    {Name = "Huge Dawn Phoenix", ID = "Huge Dawn Phoenix"},
+    {Name = "Huge Diamond Chick", ID = "Huge Diamond Chick"},
+    {Name = "Titanic Diamond Chick", ID = "Titanic Diamond Chick"}
+}
+
+-- // UI Creation
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "ZapHub_Final"
+ScreenGui.Parent = CoreGui
+ScreenGui.IgnoreGuiInset = true
+
+-- Toggle Button (Visible even when HUD is hidden)
+local ToggleBtn = Instance.new("TextButton", ScreenGui)
+ToggleBtn.Name = "Toggle"
+ToggleBtn.Size = UDim2.fromOffset(80, 25)
+ToggleBtn.Position = UDim2.new(0, 10, 0, 10)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+ToggleBtn.TextColor3 = Color3.fromRGB(255, 170, 0)
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.Text = "TOGGLE"
+ToggleBtn.TextSize = 12
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 4)
+local ToggleStroke = Instance.new("UIStroke", ToggleBtn)
+ToggleStroke.Color = Color3.fromRGB(255, 170, 0)
+
+-- Main Frame (The Dark Background)
+local MainFrame = Instance.new("Frame", ScreenGui)
+MainFrame.Name = "Main"
+MainFrame.Size = UDim2.fromScale(1, 1)
+MainFrame.BackgroundColor3 = Color3.fromRGB(5, 5, 5)
+MainFrame.BorderSizePixel = 0
+MainFrame.Visible = true
+
+-- Session Timer (Top Right)
+local TimerLabel = Instance.new("TextLabel", MainFrame)
+TimerLabel.Size = UDim2.fromOffset(150, 30)
+TimerLabel.Position = UDim2.new(1, -160, 0, 40)
+TimerLabel.BackgroundTransparency = 1
+TimerLabel.Font = Enum.Font.Code
+TimerLabel.TextColor3 = Color3.new(1, 1, 1)
+TimerLabel.TextSize = 18
+TimerLabel.TextXAlignment = Enum.TextXAlignment.Right
+TimerLabel.Text = "00:00:00"
+
+-- Center Content
+local Container = Instance.new("Frame", MainFrame)
+Container.Size = UDim2.fromOffset(400, 500)
+Container.Position = UDim2.fromScale(0.5, 0.4)
+Container.AnchorPoint = Vector2.new(0.5, 0.5)
+Container.BackgroundTransparency = 1
+
+local Title = Instance.new("TextLabel", Container)
+Title.Text = "Easter 2026"
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 50
+Title.TextColor3 = Color3.new(1, 1, 1)
+Title.Size = UDim2.new(1, 0, 0, 60)
+Title.BackgroundTransparency = 1
+
+local SubTitle = Instance.new("TextLabel", Title)
+SubTitle.Text = "Premium users only"
+SubTitle.Font = Enum.Font.SourceSansItalic
+SubTitle.TextSize = 16
+SubTitle.TextColor3 = Color3.fromRGB(255, 170, 0)
+SubTitle.Position = UDim2.new(0, 0, 0.9, 0)
+SubTitle.Size = UDim2.new(1, 0, 0, 20)
+SubTitle.BackgroundTransparency = 1
+
+-- List for Items
+local List = Instance.new("Frame", Container)
+List.Size = UDim2.new(1, 0, 0.7, 0)
+List.Position = UDim2.fromOffset(0, 110)
+List.BackgroundTransparency = 1
+
+local UIList = Instance.new("UIListLayout", List)
+UIList.Padding = UDim.new(0, 5)
+UIList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+-- Helper: Formatting
+local function fmt(n)
+    if n >= 1e6 then return string.format("%.1fM", n/1e6):gsub("%.", ",")
+    elseif n >= 1e3 then return string.format("%.1fK", n/1e3):gsub("%.", ",")
+    end
+    return tostring(math.floor(n))
+end
+
+-- Generate Item Rows
+local Labels = {}
+for _, item in pairs(TrackedItems) do
+    local Row = Instance.new("Frame", List)
+    Row.Size = UDim2.new(1, 0, 0, 30) -- Compact height
+    Row.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+    Instance.new("UICorner", Row).CornerRadius = UDim.new(0, 4)
+    local Stroke = Instance.new("UIStroke", Row)
+    Stroke.Color = Color3.fromRGB(255, 170, 0)
+    Stroke.Transparency = 0.7
+
+    local Label = Instance.new("TextLabel", Row)
+    Label.Size = UDim2.new(1, -20, 1, 0)
+    Label.Position = UDim2.fromOffset(10, 0)
+    Label.BackgroundTransparency = 1
+    Label.Font = Enum.Font.GothamBold
+    Label.TextColor3 = Color3.new(1, 1, 1)
+    Label.TextSize = 14
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Text = item.Name .. ": 0"
+    Labels[item.ID] = Label
+end
+
+-- // Logic & Loops
+ToggleBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = not MainFrame.Visible
+end)
+
+RunService.Heartbeat:Connect(function()
+    -- Timer Logic
+    local diff = os.time() - StartTime
+    TimerLabel.Text = string.format("%02d:%02d:%02d", math.floor(diff/3600), math.floor(diff%3600/60), math.floor(diff%60))
+    
+    -- Inventory Logic
+    local Save = PlayerSave.Get()
+    if Save and Save.Inventory then
+        for _, info in pairs(TrackedItems) do
+            local val = 0
+            if info.ID == "Diamonds" then
+                val = Save.Diamonds or 0
+            else
+                for cat, items in pairs(Save.Inventory) do
+                    for _, data in pairs(items) do
+                        if data.id == info.ID then val = val + (data._am or 1) end
+                    end
+                end
+            end
+            if Labels[info.ID] then Labels[info.ID].Text = info.Name .. ": " .. fmt(val) end
+        end
+    end
+end)
