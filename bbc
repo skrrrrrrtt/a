@@ -1,0 +1,168 @@
+repeat task.wait() until game:IsLoaded()
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+repeat task.wait() until not LocalPlayer.PlayerGui:FindFirstChild("__INTRO")
+
+-- =========================
+-- LIBRARY
+-- =========================
+local Library = game.ReplicatedStorage:WaitForChild("Library")
+local Client = Library.Client
+local SaveMod = require(Client.Save)
+
+local function GetAsset(Id, pt)
+    local data = require(Library.Directory.Pets)[Id]
+    return string.gsub(data and (pt == 1 and data.goldenThumbnail or data.thumbnail) or "14976456685", "rbxassetid://", "")
+end
+
+local function GetImage(Id, pt)
+    return "https://biggamesapi.io/image/" .. GetAsset(Id, pt)
+end
+
+-- =========================
+-- UI
+-- =========================
+pcall(function()
+    local old = PlayerGui:FindFirstChild("Easter2026UI")
+    if old then old:Destroy() end
+end)
+
+local ScreenGui = Instance.new("ScreenGui", PlayerGui)
+ScreenGui.Name = "Easter2026UI"
+ScreenGui.ResetOnSpawn = false
+
+local Main = Instance.new("Frame", ScreenGui)
+Main.Size = UDim2.new(0, 900, 0, 600)
+Main.Position = UDim2.new(0.5, -450, 0.5, -300)
+Main.BackgroundColor3 = Color3.fromRGB(10,10,10)
+
+Instance.new("UICorner", Main)
+
+local Title = Instance.new("TextLabel", Main)
+Title.Size = UDim2.new(1,0,0,60)
+Title.BackgroundTransparency = 1
+Title.Text = "Easter 2026"
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 32
+Title.TextColor3 = Color3.fromRGB(255,255,255)
+
+local List = Instance.new("ScrollingFrame", Main)
+List.Size = UDim2.new(1,-20,1,-80)
+List.Position = UDim2.new(0,10,0,70)
+List.BackgroundTransparency = 1
+List.ScrollBarThickness = 4
+
+local Layout = Instance.new("UIListLayout", List)
+Layout.Padding = UDim.new(0,6)
+
+-- =========================
+-- ROW CREATOR
+-- =========================
+local Rows = {}
+
+local function CreateRow(name, id, pt)
+    local Frame = Instance.new("Frame", List)
+    Frame.Size = UDim2.new(1,0,0,50)
+    Frame.BackgroundColor3 = Color3.fromRGB(15,15,15)
+
+    Instance.new("UICorner", Frame)
+
+    local Stroke = Instance.new("UIStroke", Frame)
+    Stroke.Color = Color3.fromRGB(255,170,0)
+
+    local Img = Instance.new("ImageLabel", Frame)
+    Img.Size = UDim2.new(0,40,0,40)
+    Img.Position = UDim2.new(0,8,0.5,-20)
+    Img.BackgroundTransparency = 1
+    Img.Image = GetImage(id, pt)
+
+    local Text = Instance.new("TextLabel", Frame)
+    Text.Size = UDim2.new(1,-60,1,0)
+    Text.Position = UDim2.new(0,55,0,0)
+    Text.BackgroundTransparency = 1
+    Text.Font = Enum.Font.Gotham
+    Text.TextSize = 16
+    Text.TextColor3 = Color3.fromRGB(255,255,255)
+    Text.TextXAlignment = Enum.TextXAlignment.Left
+
+    Rows[name] = {
+        label = Text,
+        value = 0
+    }
+end
+
+-- =========================
+-- CREATE SAME ITEMS
+-- =========================
+CreateRow("Diamonds", "Huge Diamond", 0)
+CreateRow("Spring Egg Token", "Spring Egg", 0)
+CreateRow("Spring Bluebell Token", "Spring Bluebell", 0)
+CreateRow("Spring Red Tulip Token", "Spring Red Tulip", 0)
+CreateRow("Spring Pink Rose Token", "Spring Pink Rose", 0)
+CreateRow("Spring Yellow Sunflower Token", "Spring Sunflower", 0)
+CreateRow("Huge Dawn Phoenix", "Huge Dawn Phoenix", 0)
+CreateRow("Huge Diamond Chick", "Huge Diamond Chick", 0)
+CreateRow("Titanic Diamond Chick", "Titanic Diamond Chick", 0)
+
+-- auto resize
+task.spawn(function()
+    while true do
+        List.CanvasSize = UDim2.new(0,0,0,Layout.AbsoluteContentSize.Y + 10)
+        task.wait()
+    end
+end)
+
+-- =========================
+-- LIVE INVENTORY TRACKER
+-- =========================
+task.spawn(function()
+    while true do
+        local save = SaveMod.Get()
+
+        if save and save.Inventory then
+            local inv = save.Inventory
+
+            local counts = {
+                ["Diamonds"] = save.Diamonds or 0,
+                ["Spring Egg Token"] = 0,
+                ["Spring Bluebell Token"] = 0,
+                ["Spring Red Tulip Token"] = 0,
+                ["Spring Pink Rose Token"] = 0,
+                ["Spring Yellow Sunflower Token"] = 0,
+                ["Huge Dawn Phoenix"] = 0,
+                ["Huge Diamond Chick"] = 0,
+                ["Titanic Diamond Chick"] = 0,
+            }
+
+            for class, items in pairs(inv) do
+                for _, v in pairs(items) do
+                    local id = v.id
+
+                    -- TOKENS
+                    if id == "Spring Egg" then counts["Spring Egg Token"] += 1 end
+                    if id == "Spring Bluebell" then counts["Spring Bluebell Token"] += 1 end
+                    if id == "Spring Red Tulip" then counts["Spring Red Tulip Token"] += 1 end
+                    if id == "Spring Pink Rose" then counts["Spring Pink Rose Token"] += 1 end
+                    if id == "Spring Sunflower" then counts["Spring Yellow Sunflower Token"] += 1 end
+
+                    -- PETS
+                    if id == "Huge Dawn Phoenix" then counts["Huge Dawn Phoenix"] += 1 end
+                    if id == "Huge Diamond Chick" then counts["Huge Diamond Chick"] += 1 end
+                    if id == "Titanic Diamond Chick" then counts["Titanic Diamond Chick"] += 1 end
+                end
+            end
+
+            -- UPDATE UI
+            for name, val in pairs(counts) do
+                if Rows[name] then
+                    Rows[name].label.Text = name .. ": " .. tostring(val)
+                end
+            end
+        end
+
+        task.wait(2)
+    end
+end)
