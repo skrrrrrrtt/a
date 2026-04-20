@@ -1,0 +1,163 @@
+-- Kiểm tra biến toàn cục để xác định script đã chạy hay chưa
+if _G.WEBHOOKS then
+    warn("Script đã được chạy trước đó!")
+    return -- Dừng script nếu đã chạy
+end
+-- Đánh dấu script đã được chạy
+_G.WEBHOOKS = true
+
+getgenv().Webhook = {
+    ['ID'] = "",
+    ['Id Names'] = { "Huge", "Titanic"},
+    ['URL'] = "https://discord.com/api/webhooks/1414550206531244133/CRQ7-hTnGaBnu-v-yAGxOQYg07hdOZ2d93xfv6-PBTsSU5g3iqoV7_mkZSzoYKdBn1F1",
+}
+
+repeat task.wait() until game:IsLoaded()
+local LocalPlayer = game:GetService('Players').LocalPlayer
+repeat task.wait() until not LocalPlayer.PlayerGui:FindFirstChild('__INTRO')
+
+local Library = game.ReplicatedStorage.Library
+local Client = Library.Client
+
+local ExistCmds = require(Client.ExistCountCmds)
+local RapCmds = require(Client.RAPCmds)
+local Network = require(Client.Network)
+local SaveMod = require(Client.Save)
+
+-- Định dạng số lượng lớn
+local Formatint = function(int)
+    local Suffix = {"", "k", "M", "B", "T", "Qd", "Qn", "Sx", "Sp", "Oc", "No", "De", "UDe", "DDe", "TDe", "QdDe", "QnDe", "SxDe", "SpDe", "OcDe", "NoDe", "Vg", "UVg", "DVg", "TVg", "QdVg", "QnVg", "SxVg", "SpVg", "OcVg", "NoVg", "Tg", "UTg", "DTg", "TTg", "QdTg", "QnTg", "SxTg", "SpTg", "OcTg", "NoTg", "QdAg", "QnAg", "SxAg", "SpAg", "OcAg", "NoAg", "e141", "e144", "e147", "e150", "e153", "e156", "e159", "e162", "e165", "e168", "e171", "e174", "e177", "e180", "e183", "e186", "e189", "e192", "e195", "e198", "e201", "e204", "e207", "e210", "e213", "e216", "e219", "e222", "e225", "e228", "e231", "e234", "e237", "e240", "e243", "e246", "e249", "e252", "e255", "e258", "e261", "e264", "e267", "e270", "e273", "e276", "e279", "e282", "e285", "e288", "e291", "e294", "e297", "e300", "e303"}
+    local Index = 1
+    
+    if int < 999 then 
+        return int
+    end
+    while int >= 1000 and Index < #Suffix do
+        int = int / 1000
+        Index = Index + 1
+    end
+    return string.format("%.2f%s", int, Suffix[Index])
+end
+
+local GetAsset = function(Id, pt)
+    local Asset = require(Library.Directory.Pets)[Id]
+    return string.gsub(Asset and (pt == 1 and Asset.goldenThumbnail or Asset.thumbnail) or "14976456685", "rbxassetid://", "")
+end
+
+-- Hàm gửi Webhook thông báo
+local function SendWebhook(Class, Id, pt, sh)
+    local Version = pt == 1 and "Golden " or pt == 2 and "Rainbow " or ""
+    local ItemType = (Class == "Pet" and "Thú cưng" or "Thẻ bài") -- Phân biệt loại
+    local Title = string.format("||%s|| vừa nhận được **%s%s%s** (%s)", 
+        LocalPlayer.Name, Version, sh and "Shiny " or "", Id, ItemType)
+
+    -- Nếu là Card, chỉ gửi webhook đơn giản
+    if Class == "Card" then
+        local Body = game:GetService("HttpService"):JSONEncode({
+            content = string.format("<@%s>", Webhook['ID']),
+            embeds = {
+                {
+                    title = Title,
+                    color = 0xFF00FF,
+                    timestamp = DateTime.now():ToIsoDate(),
+                    footer = { text = "Heo Notifier" }
+                }
+            }
+        })
+
+        local success, err = pcall(function()
+            return request({
+                Url = Webhook['URL'],
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = Body
+            })
+        end)
+
+        if not success then
+            warn("Webhook gửi thất bại:", err)
+        end
+        return
+    end
+
+    -- Nếu không phải Card, tiếp tục lấy hình ảnh, RAP, Exist
+    local Img = string.format("https://biggamesapi.io/image/%s", GetAsset(Id, pt))
+
+    local Body = game:GetService("HttpService"):JSONEncode({
+        content = string.format("<@%s>", Webhook['ID']),
+        embeds = {
+            {
+                title = Title,
+                color = 0xFF00FF,
+                timestamp = DateTime.now():ToIsoDate(),
+                thumbnail = { url = Img },
+                fields = {
+                    { name = string.format("💎 Rap: ``%s`` \n💫 Exist: ``%s``", Formatint(Rap or 0), Formatint(Exist or 0)), value = "" }
+                },
+                footer = { text = "Heo Notifier" }
+            }
+        }
+    })
+
+    local success, err = pcall(function()
+        return request({
+            Url = Webhook['URL'],
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = Body
+        })
+    end)
+
+    if not success then
+        warn("Webhook gửi thất bại:", err)
+    end
+end
+
+-- Lưu số lượng Huge theo loại
+local HugeCount = {}
+
+task.spawn(function()
+    while true do
+        -- Lấy inventory mới nhất
+        local Inventory = SaveMod.Get()['Inventory']
+        local CurrentCount = {}
+        local NewHugeFound = false -- Cờ kiểm tra có Huge mới không
+
+        for Class, Items in pairs(Inventory) do
+            -- Kiểm tra nếu Class thuộc danh sách cần theo dõi (Pet / Card)
+            if Class == "Pet" or Class == "Card" then
+                for uid, v in pairs(Items) do
+                    -- Kiểm tra nếu item thuộc danh sách Huge / Titanic
+                    for _, name in ipairs(Webhook['Id Names']) do
+                        if string.find(v.id, name) then
+                            -- Cập nhật số lượng theo loại
+                            local Key = Class .. "_" .. v.id -- Tạo key riêng cho từng loại
+                            CurrentCount[Key] = (CurrentCount[Key] or 0) + 1
+
+                            -- Nếu loại này nhiều hơn lần trước, có item mới hoặc quay lại
+                            if (HugeCount[Key] or 0) < CurrentCount[Key] then
+                                SendWebhook(Class, v.id, v.pt, v.sh)
+                                NewHugeFound = true
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Nếu số lượng giảm, cập nhật lại nhưng không gửi Webhook
+        for key, count in pairs(HugeCount) do
+            if (CurrentCount[key] or 0) < count then
+                HugeCount[key] = CurrentCount[key] or 0
+            end
+        end
+
+        -- Nếu có item mới, cập nhật HugeCount
+        if NewHugeFound then
+            HugeCount = CurrentCount
+        end
+
+        -- Đợi 5 giây trước khi kiểm tra lại
+        task.wait(5)
+    end
+end)
