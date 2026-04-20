@@ -1,0 +1,175 @@
+-- // Services
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- // Variables
+local LocalPlayer = Players.LocalPlayer
+local PlayerSave = require(ReplicatedStorage.Library.Client.Save)
+local StartTime = os.time()
+
+-- // Cleanup existing UI
+if CoreGui:FindFirstChild("ZapHub_Gang") then
+    CoreGui:FindFirstChild("ZapHub_Gang"):Destroy()
+end
+
+-- // Configuration
+local TrackedItems = {
+    {Name = "Diamonds", ID = "Diamonds"},
+    {Name = "Spring Egg Token", ID = "Spring Egg Token"},
+    {Name = "Spring Bluebell Token", ID = "Spring Bluebell Token"},
+    {Name = "Spring Red Tulip Token", ID = "Spring Red Tulip Token"},
+    {Name = "Spring Pink Rose Token", ID = "Spring Pink Rose Token"},
+    {Name = "Spring Yellow Sunflower Token", ID = "Spring Yellow Sunflower Token"},
+    {Name = "Huge Dawn Phoenix", ID = "Huge Dawn Phoenix"},
+    {Name = "Huge Diamond Chick", ID = "Huge Diamond Chick"},
+    {Name = "Titanic Diamond Chick", ID = "Titanic Diamond Chick"}
+}
+
+-- // UI Root
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "ZapHub_Gang"
+ScreenGui.Parent = CoreGui
+ScreenGui.IgnoreGuiInset = true
+
+-- // Small Open Button (Stays visible when HUD is closed)
+local OpenBtn = Instance.new("TextButton", ScreenGui)
+OpenBtn.Size = UDim2.fromOffset(40, 40)
+OpenBtn.Position = UDim2.fromOffset(10, 10)
+OpenBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+OpenBtn.Text = "⚡"
+OpenBtn.TextColor3 = Color3.fromRGB(255, 170, 0)
+OpenBtn.Font = Enum.Font.GothamBold
+OpenBtn.TextSize = 20
+OpenBtn.Visible = false
+Instance.new("UICorner", OpenBtn)
+local OpenStroke = Instance.new("UIStroke", OpenBtn)
+OpenStroke.Color = Color3.fromRGB(255, 170, 0)
+
+-- // Main Fullscreen Frame
+local MainFrame = Instance.new("Frame", ScreenGui)
+MainFrame.Size = UDim2.fromScale(1, 1)
+MainFrame.BackgroundColor3 = Color3.fromRGB(5, 5, 5)
+MainFrame.BorderSizePixel = 0
+
+-- Session Timer
+local TimerLabel = Instance.new("TextLabel", MainFrame)
+TimerLabel.Size = UDim2.fromOffset(150, 30)
+TimerLabel.Position = UDim2.new(1, -160, 0, 40)
+TimerLabel.BackgroundTransparency = 1
+TimerLabel.Font = Enum.Font.Code
+TimerLabel.TextColor3 = Color3.new(1, 1, 1)
+TimerLabel.TextSize = 20
+TimerLabel.TextXAlignment = Enum.TextXAlignment.Right
+TimerLabel.Text = "00:00:00"
+
+-- Center Container
+local Container = Instance.new("Frame", MainFrame)
+Container.Size = UDim2.fromOffset(450, 550)
+Container.Position = UDim2.fromScale(0.5, 0.45)
+Container.AnchorPoint = Vector2.new(0.5, 0.5)
+Container.BackgroundTransparency = 1
+
+local Title = Instance.new("TextLabel", Container)
+Title.Text = "Easter 2026"
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 55
+Title.TextColor3 = Color3.new(1, 1, 1)
+Title.Size = UDim2.new(1, 0, 0, 60)
+Title.BackgroundTransparency = 1
+
+local SubTitle = Instance.new("TextLabel", Title)
+SubTitle.Text = "Premium users only"
+SubTitle.Font = Enum.Font.SourceSansItalic
+SubTitle.TextSize = 18
+SubTitle.TextColor3 = Color3.fromRGB(255, 170, 0)
+SubTitle.Position = UDim2.new(0, 0, 0.9, 0)
+SubTitle.Size = UDim2.new(1, 0, 0, 20)
+SubTitle.BackgroundTransparency = 1
+
+-- Stats List
+local List = Instance.new("Frame", Container)
+List.Size = UDim2.new(1, 0, 0, 0)
+List.Position = UDim2.fromOffset(0, 110)
+List.BackgroundTransparency = 1
+local UIList = Instance.new("UIListLayout", List)
+UIList.Padding = UDim.new(0, 8)
+UIList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+-- Helper: Format Numbers
+local function fmt(n)
+    if n >= 1e6 then return string.format("%.1fM", n/1e6):gsub("%.", ",")
+    elseif n >= 1e3 then return string.format("%.1fK", n/1e3):gsub("%.", ",")
+    end
+    return tostring(math.floor(n))
+end
+
+-- Generate Stats Rows
+local Labels = {}
+for _, item in pairs(TrackedItems) do
+    local Row = Instance.new("Frame", List)
+    Row.Size = UDim2.new(1, 0, 0, 35)
+    Row.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+    Instance.new("UICorner", Row).CornerRadius = UDim.new(0, 6)
+    local Stroke = Instance.new("UIStroke", Row)
+    Stroke.Color = Color3.fromRGB(255, 170, 0)
+    Stroke.Transparency = 0.7
+
+    local Label = Instance.new("TextLabel", Row)
+    Label.Size = UDim2.new(1, -20, 1, 0)
+    Label.Position = UDim2.fromOffset(15, 0)
+    Label.BackgroundTransparency = 1
+    Label.Font = Enum.Font.GothamBold
+    Label.TextColor3 = Color3.new(1, 1, 1)
+    Label.TextSize = 16
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Text = item.Name .. ": 0"
+    Labels[item.ID] = Label
+end
+
+-- // THE TOGGLE BUTTON (Placed at the bottom of the list)
+local ToggleBtn = Instance.new("TextButton", List)
+ToggleBtn.Size = UDim2.new(1, 0, 0, 40)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(255, 170, 0)
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.Text = "CLOSE STATS"
+ToggleBtn.TextColor3 = Color3.new(0, 0, 0)
+ToggleBtn.TextSize = 16
+Instance.new("UICorner", ToggleBtn)
+
+-- // UI Logic
+ToggleBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = false
+    OpenBtn.Visible = true
+end)
+
+OpenBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = true
+    OpenBtn.Visible = false
+end)
+
+-- // Update Loop
+RunService.Heartbeat:Connect(function()
+    -- Update Timer
+    local diff = os.time() - StartTime
+    TimerLabel.Text = string.format("%02d:%02d:%02d", math.floor(diff/3600), math.floor(diff%3600/60), math.floor(diff%60))
+    
+    -- Update Stats
+    local Save = PlayerSave.Get()
+    if Save and Save.Inventory then
+        for _, info in pairs(TrackedItems) do
+            local val = 0
+            if info.ID == "Diamonds" then
+                val = Save.Diamonds or 0
+            else
+                for cat, items in pairs(Save.Inventory) do
+                    for _, data in pairs(items) do
+                        if data.id == info.ID then val = val + (data._am or 1) end
+                    end
+                end
+            end
+            if Labels[info.ID] then Labels[info.ID].Text = info.Name .. ": " .. fmt(val) end
+        end
+    end
+end)
