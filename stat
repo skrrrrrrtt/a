@@ -1,0 +1,157 @@
+-- // Services
+local Players = game:GetService("Players")
+local CoreGui = game:GetService("CoreGui")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- // Variables
+local LocalPlayer = Players.LocalPlayer
+local PlayerSave = require(ReplicatedStorage.Library.Client.Save)
+
+-- // Cleanup
+if CoreGui:FindFirstChild("ZapHub_Compact") then
+    CoreGui:FindFirstChild("ZapHub_Compact"):Destroy()
+end
+
+-- // Configuration
+local TrackedItems = {
+    {Name = "Diamonds", ID = "Diamonds"},
+    {Name = "Spring Egg Token", ID = "Spring Egg Token"},
+    {Name = "Spring Bluebell Token", ID = "Spring Bluebell Token"},
+    {Name = "Spring Red Tulip Token", ID = "Spring Red Tulip Token"},
+    {Name = "Spring Pink Rose Token", ID = "Spring Pink Rose Token"},
+    {Name = "Spring Yellow Sunflower Token", ID = "Spring Yellow Sunflower Token"},
+    {Name = "Huge Dawn Phoenix", ID = "Huge Dawn Phoenix"},
+    {Name = "Huge Diamond Chick", ID = "Huge Diamond Chick"},
+    {Name = "Titanic Diamond Chick", ID = "Titanic Diamond Chick"}
+}
+
+-- // UI Creation
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "ZapHub_Compact"
+ScreenGui.Parent = CoreGui
+ScreenGui.IgnoreGuiInset = true
+
+-- Toggle Button (Always visible)
+local ToggleBtn = Instance.new("TextButton", ScreenGui)
+ToggleBtn.Size = UDim2.fromOffset(100, 30)
+ToggleBtn.Position = UDim2.new(0.5, -50, 0, 10)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+ToggleBtn.TextColor3 = Color3.fromRGB(255, 170, 0)
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.Text = "TOGGLE HUD"
+ToggleBtn.TextSize = 12
+local BtnCorner = Instance.new("UICorner", ToggleBtn)
+local BtnStroke = Instance.new("UIStroke", ToggleBtn)
+BtnStroke.Color = Color3.fromRGB(255, 170, 0)
+BtnStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+
+-- Main Background
+local MainFrame = Instance.new("Frame", ScreenGui)
+MainFrame.Size = UDim2.fromScale(1, 1)
+MainFrame.BackgroundColor3 = Color3.fromRGB(5, 5, 5)
+MainFrame.BorderSizePixel = 0
+MainFrame.Visible = true
+
+-- Content Container
+local Container = Instance.new("Frame", MainFrame)
+Container.Size = UDim2.fromOffset(450, 500)
+Container.Position = UDim2.fromScale(0.5, 0.45)
+Container.AnchorPoint = Vector2.new(0.5, 0.5)
+Container.BackgroundTransparency = 1
+
+-- Header
+local Title = Instance.new("TextLabel", Container)
+Title.Text = "Easter 2026"
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 42
+Title.TextColor3 = Color3.new(1, 1, 1)
+Title.Size = UDim2.new(1, 0, 0, 50)
+Title.BackgroundTransparency = 1
+
+local SubTitle = Instance.new("TextLabel", Title)
+SubTitle.Text = "Premium users only"
+SubTitle.Font = Enum.Font.SourceSansItalic
+SubTitle.TextSize = 16
+SubTitle.TextColor3 = Color3.fromRGB(255, 170, 0)
+SubTitle.Position = UDim2.new(0, 0, 0.8, 0)
+SubTitle.Size = UDim2.new(1, 0, 0, 20)
+SubTitle.BackgroundTransparency = 1
+
+-- List Container
+local List = Instance.new("Frame", Container)
+List.Size = UDim2.new(1, 0, 0.8, 0)
+List.Position = UDim2.fromOffset(0, 100)
+List.BackgroundTransparency = 1
+
+local UIList = Instance.new("UIListLayout", List)
+UIList.Padding = UDim.new(0, 6)
+UIList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+-- Helper: Format Numbers (2,5K)
+local function FormatNumber(n)
+    if n >= 1000000 then
+        return string.format("%.1fM", n / 1000000):gsub("%.", ",")
+    elseif n >= 1000 then
+        return string.format("%.1fK", n / 1000):gsub("%.", ",")
+    end
+    return tostring(math.floor(n))
+end
+
+-- Generate Rows
+local Labels = {}
+for _, item in pairs(TrackedItems) do
+    local Row = Instance.new("Frame", List)
+    Row.Size = UDim2.new(0.9, 0, 0, 32) -- Smaller height
+    Row.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+    
+    local Corner = Instance.new("UICorner", Row)
+    Corner.CornerRadius = UDim.new(0, 4)
+    
+    local Stroke = Instance.new("UIStroke", Row)
+    Stroke.Color = Color3.fromRGB(255, 170, 0)
+    Stroke.Transparency = 0.6
+
+    local Text = Instance.new("TextLabel", Row)
+    Text.Size = UDim2.new(1, -20, 1, 0)
+    Text.Position = UDim2.fromOffset(10, 0)
+    Text.BackgroundTransparency = 1
+    Text.Font = Enum.Font.GothamBold
+    Text.TextColor3 = Color3.new(1, 1, 1)
+    Text.TextSize = 14
+    Text.TextXAlignment = Enum.TextXAlignment.Left
+    Text.Text = item.Name .. ": 0"
+    
+    Labels[item.ID] = Text
+end
+
+-- // Logic
+ToggleBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = not MainFrame.Visible
+end)
+
+task.spawn(function()
+    while task.wait(1) do
+        local Save = PlayerSave.Get()
+        if Save and Save.Inventory then
+            for _, info in pairs(TrackedItems) do
+                local count = 0
+                if info.ID == "Diamonds" then
+                    count = Save.Diamonds or 0
+                else
+                    for category, items in pairs(Save.Inventory) do
+                        for _, data in pairs(items) do
+                            if data.id == info.ID then
+                                count = count + (data._am or 1)
+                            end
+                        end
+                    end
+                end
+                
+                if Labels[info.ID] then
+                    Labels[info.ID].Text = info.Name .. ": " .. FormatNumber(count)
+                end
+            end
+        end
+    end
+end)
