@@ -1,0 +1,63 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer
+
+repeat task.wait() until game:IsLoaded()
+repeat task.wait() until not LocalPlayer.PlayerGui:FindFirstChild("__INTRO")
+
+local Library = ReplicatedStorage.Library
+local Network = require(Library.Client.Network)
+local PetNetworking = require(Library.Client.PetNetworking)
+
+local AllBreakables = {}
+local PetIDs = {}
+local Euids = {}
+
+-- // Debug - print every 3s
+task.spawn(function()
+    while true do
+        task.wait(3)
+        local count = 0
+        for _ in pairs(AllBreakables) do count += 1 end
+        print("Breakables tracked:", count)
+        print("Pets tracked:", #PetIDs)
+        -- print first breakable raw data
+        for k, v in pairs(AllBreakables) do
+            print("Sample breakable key:", k, "data:", v)
+            break
+        end
+    end
+end)
+
+-- // Log raw event data
+Network.Fired("Breakables_Created"):Connect(function(data)
+    print("Breakables_Created fired, data type:", type(data))
+    print("Raw data:", data)
+    for i, v in pairs(data) do
+        print("  entry", i, "->", v)
+        if type(v) == "table" then
+            for k2, v2 in pairs(v) do
+                print("    ", k2, "=", v2)
+            end
+        end
+        break -- just first one
+    end
+end)
+
+Network.Fired("Breakables_Ping"):Connect(function(data)
+    print("Breakables_Ping fired")
+end)
+
+-- // Pets
+local function updatePets()
+    PetIDs = {}
+    Euids = {}
+    local equipped = PetNetworking.EquippedPets()
+    if type(equipped) ~= "table" then return end
+    for petID, petData in pairs(equipped) do
+        Euids[petID] = petData
+        table.insert(PetIDs, petID)
+    end
+    print("Pets loaded:", #PetIDs)
+end
+updatePets()
