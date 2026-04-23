@@ -1,0 +1,127 @@
+-- Clean Farm v5 | Street Life Remastered
+
+local Players = game:GetService("Players")
+local RS      = game:GetService("ReplicatedStorage")
+local UIS     = game:GetService("UserInputService")
+local LP      = Players.LocalPlayer
+
+local running  = false
+local KEYWORDS = {"clean", "puddle", "wash", "sink", "scrub", "wipe"}
+
+local function matchesKeyword(str)
+    str = str:lower()
+    for _, kw in ipairs(KEYWORDS) do
+        if str:find(kw) then return true end
+    end
+    return false
+end
+
+local function getChar()
+    local char = LP.Character
+    if not char then return nil, nil, nil end
+    return char, char:FindFirstChild("HumanoidRootPart"), char:FindFirstChild("Humanoid")
+end
+
+local function isPromptValid(prompt)
+    return prompt
+        and prompt.Parent
+        and prompt.Enabled
+        and prompt:IsDescendantOf(workspace)
+end
+
+local function getAllPrompts(hrp)
+    local found = {}
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("ProximityPrompt") and isPromptValid(obj) then
+            local a = obj.ActionText or ""
+            local o = obj.ObjectText or ""
+            local p = obj.Parent and obj.Parent.Name or ""
+            if matchesKeyword(a) or matchesKeyword(o) or matchesKeyword(p) then
+                local part = obj.Parent
+                local pos = (part:IsA("BasePart") and part.Position)
+                         or (part:IsA("Model") and part.PrimaryPart and part.PrimaryPart.Position)
+                if pos then
+                    table.insert(found, {prompt = obj, pos = pos, dist = (hrp.Position - pos).Magnitude})
+                end
+            end
+        end
+    end
+    -- sort by distance
+    table.sort(found, function(a, b) return a.dist < b.dist end)
+    return found
+end
+
+local function walkTo(hum, hrp, targetPos)
+    hum:MoveTo(targetPos)
+    local t = 0
+    while running do
+        task.wait(0.1)
+        t += 0.1
+        if (hrp.Position - targetPos).Magnitude <= 4 then break end
+        if t >= 15 then break end
+        if t % 3 < 0.15 then hum:MoveTo(targetPos) end -- nudge so it doesnt stop
+    end
+end
+
+local function doClean(prompt)
+    if not isPromptValid(prompt) then return false end
+    local ok = pcall(function()
+        prompt:InputHoldBegin()
+        task.wait((prompt.HoldDuration or 2) + 0.2)
+        prompt:InputHoldEnd()
+    end)
+    return ok
+end
+
+local function farmLoop()
+    while running do
+        local char, hrp, hum = getChar()
+        if not char or not hrp or not hum then task.wait(1) continue end
+        if hum.Health <= 0 then task.wait(3) continue end
+
+        if char:FindFirstChildOfClass("Tool") then
+            hum:UnequipTools()
+            task.wait(0.2)
+        end
+
+        local list = getAllPrompts(hrp)
+
+        if #list == 0 then
+            print("[CleanFarm] No puddles found, waiting 2s...")
+            task.wait(2)
+            continue
+        end
+
+        local nearest = list[1]
+        print(string.format("[CleanFarm] Walking to puddle: '%s' (%.1f studs)", nearest.prompt.Parent.Name, nearest.dist))
+
+        walkTo(hum, hrp, nearest.pos)
+        if not running then break end
+
+        task.wait(0.3)
+
+        print("[CleanFarm] Cleaning...")
+        doClean(nearest.prompt)
+
+        print("[CleanFarm] Done, waiting 4s for animation...")
+        task.wait(4)
+
+        print("[CleanFarm] Moving to next puddle!")
+        -- loop continues immediately to find next nearest
+    end
+end
+
+UIS.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.P then
+        running = not running
+        if running then
+            print("[CleanFarm] ON")
+            task.spawn(farmLoop)
+        else
+            print("[CleanFarm] OFF")
+        end
+    end
+end)
+
+print("[CleanFarm] Loaded — Press P to toggle")
