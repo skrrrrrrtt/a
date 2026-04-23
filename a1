@@ -1,0 +1,110 @@
+-- Crypto Trader v10 | Street Life Remastered
+
+local LP = game:GetService("Players").LocalPlayer
+
+local BUY_BELOW  = 5000
+local SELL_ABOVE = 8000
+
+local holding  = false
+local boughtAt = 0
+local lastPrice = nil
+
+local PhoneUI       = LP:WaitForChild("PlayerGui"):WaitForChild("PhoneUI")
+local CurrencyFrame = PhoneUI:WaitForChild("CurrencyFrame")
+local CryptoCurrent = CurrencyFrame:WaitForChild("CryptoCurrent") -- always exists
+
+local function getPrice()
+    return tonumber((CryptoCurrent.Text:gsub("[%$,]","") ))
+end
+
+local function getBTCBal()
+    local cf = PhoneUI:FindFirstChild("CryptoFrame")
+    if not cf then return 0 end
+    local bb = cf:FindFirstChild("BTCBalance")
+    if not bb then return 0 end
+    return tonumber(bb.Text:match("(%d+)$")) or 0
+end
+
+local function clickBuy()
+    local cf = PhoneUI:FindFirstChild("CryptoFrame")
+    if not cf then print("[BTC] CryptoFrame not open!") return end
+    local btn = cf:FindFirstChild("Buy")
+    if btn then pcall(function() btn:FireButton1Click() end) end
+end
+
+local function clickSell()
+    local cf = PhoneUI:FindFirstChild("CryptoFrame")
+    if not cf then print("[BTC] CryptoFrame not open!") return end
+    local btn = cf:FindFirstChild("Sell")
+    if btn then pcall(function() btn:FireButton1Click() end) end
+end
+
+local function buy(price)
+    clickBuy()
+    task.wait(0.5)
+    if getBTCBal() > 0 then
+        holding  = true
+        boughtAt = price
+        print(string.format("[BTC] ✅ Bought @ $%d", price))
+    else
+        print("[BTC] ⚠️ Buy failed — open Phone > Crypto first")
+    end
+end
+
+local function sell(price)
+    clickSell()
+    task.wait(0.5)
+    if getBTCBal() == 0 then
+        print(string.format("[BTC] 💰 Sold @ $%d | Profit: +$%d", price, price - boughtAt))
+        holding  = false
+        boughtAt = 0
+    else
+        print("[BTC] ⚠️ Sell failed")
+    end
+end
+
+local function onPriceChange(price)
+    if not price or price == lastPrice then return end
+    lastPrice = price
+
+    local bal = getBTCBal()
+    if bal > 0 and not holding then holding = true boughtAt = price end
+    if bal == 0 and holding then holding = false boughtAt = 0 end
+
+    print(string.format("[BTC] $%d | Holding: %s | Bal: %d BTC | P&L: $%d",
+        price, tostring(holding), bal, holding and (price - boughtAt) or 0))
+
+    if not holding and price <= BUY_BELOW then
+        buy(price)
+    elseif holding and price >= SELL_ABOVE then
+        sell(price)
+    end
+end
+
+-- CryptoCurrent always exists, watch it
+CryptoCurrent:GetPropertyChangedSignal("Text"):Connect(function()
+    onPriceChange(getPrice())
+end)
+
+-- also hook CryptoFrame buttons when it appears
+PhoneUI.ChildAdded:Connect(function(child)
+    if child.Name == "CryptoFrame" then
+        print("[BTC] CryptoFrame opened!")
+        task.wait(0.3)
+        onPriceChange(getPrice())
+    end
+end)
+
+-- initial
+task.spawn(function()
+    task.wait(1)
+    local price = getPrice()
+    if price then
+        print(string.format("[BTC] Ready | Price: $%d | Buy<$%d | Sell>$%d", price, BUY_BELOW, SELL_ABOVE))
+        onPriceChange(price)
+    else
+        print("[BTC] Waiting for price... open Phone > Crypto once")
+    end
+end)
+
+print("[BTC] v10 loaded | Buy<$" .. BUY_BELOW .. " | Sell>$" .. SELL_ABOVE)
