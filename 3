@@ -1,0 +1,224 @@
+-- Clean Farm v7 | Street Life Remastered
+
+local Players = game:GetService("Players")
+local RS      = game:GetService("ReplicatedStorage")
+local UIS     = game:GetService("UserInputService")
+local LP      = Players.LocalPlayer
+
+local running    = false
+local KEYWORDS   = {"clean", "puddle", "wash", "sink", "scrub", "wipe"}
+local COOLDOWN   = 30
+local recentlyCleanedPuddles = {}
+
+-- ============ HUD ============
+local totalMoney  = 0
+local cleanCount  = 0
+local startTime   = nil
+
+local function makeText(size, pos, anchor)
+    local t = Drawing.new("Text")
+    t.Size     = size
+    t.Font     = Drawing.Fonts.UI
+    t.Color    = Color3.fromRGB(255, 255, 255)
+    t.Outline  = true
+    t.OutlineColor = Color3.fromRGB(0, 0, 0)
+    t.Position = pos
+    t.Visible  = false
+    return t
+end
+
+local vp       = workspace.CurrentCamera.ViewportSize
+local centerX  = vp.X / 2
+
+local txtTitle  = makeText(28, Vector2.new(centerX, 20), "center")
+local txtUptime = makeText(22, Vector2.new(centerX, 55), "center")
+local txtMoney  = makeText(22, Vector2.new(centerX, 82), "center")
+local txtCount  = makeText(22, Vector2.new(centerX, 109), "center")
+local txtStatus = makeText(18, Vector2.new(centerX, 136), "center")
+
+txtTitle.Text = "[ CLEAN FARM ]"
+txtTitle.Color = Color3.fromRGB(0, 0, 0)
+txtTitle.OutlineColor = Color3.fromRGB(255, 255, 255)
+
+local function setHudVisible(v)
+    txtTitle.Visible  = v
+    txtUptime.Visible = v
+    txtMoney.Visible  = v
+    txtCount.Visible  = v
+    txtStatus.Visible = v
+end
+
+local function formatTime(secs)
+    local h = math.floor(secs / 3600)
+    local m = math.floor((secs % 3600) / 60)
+    local s = math.floor(secs % 60)
+    return string.format("%02d:%02d:%02d", h, m, s)
+end
+
+local function setStatus(msg)
+    txtStatus.Text = "Status: " .. msg
+end
+
+-- HUD update loop
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        if running and startTime then
+            local elapsed = tick() - startTime
+            txtUptime.Text = "Uptime : " .. formatTime(elapsed)
+            txtMoney.Text  = string.format("Earned  : $%s", tostring(totalMoney))
+            txtCount.Text  = string.format("Cleaned : %d puddles", cleanCount)
+        end
+    end
+end)
+-- ==============================
+
+local NotifyEvent = RS:WaitForChild("Remotes"):WaitForChild("Notify")
+
+local function matchesKeyword(str)
+    str = str:lower()
+    for _, kw in ipairs(KEYWORDS) do
+        if str:find(kw) then return true end
+    end
+    return false
+end
+
+local function getChar()
+    local char = LP.Character
+    if not char then return nil, nil, nil end
+    return char, char:FindFirstChild("HumanoidRootPart"), char:FindFirstChild("Humanoid")
+end
+
+local function isPromptValid(prompt)
+    return prompt and prompt.Parent and prompt.Enabled and prompt:IsDescendantOf(workspace)
+end
+
+local function wasRecentlyCleaned(prompt)
+    local key = tostring(prompt.Parent)
+    local last = recentlyCleanedPuddles[key]
+    return last and (tick() - last) < COOLDOWN
+end
+
+local function markCleaned(prompt)
+    recentlyCleanedPuddles[tostring(prompt.Parent)] = tick()
+end
+
+local function getAllPrompts(hrp)
+    local found = {}
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("ProximityPrompt") and isPromptValid(obj) and not wasRecentlyCleaned(obj) then
+            local a, o, p = obj.ActionText or "", obj.ObjectText or "", obj.Parent and obj.Parent.Name or ""
+            if matchesKeyword(a) or matchesKeyword(o) or matchesKeyword(p) then
+                local part = obj.Parent
+                local pos = (part:IsA("BasePart") and part.Position)
+                         or (part:IsA("Model") and part.PrimaryPart and part.PrimaryPart.Position)
+                if pos then
+                    table.insert(found, {prompt = obj, pos = pos, dist = (hrp.Position - pos).Magnitude})
+                end
+            end
+        end
+    end
+    table.sort(found, function(a, b) return a.dist < b.dist end)
+    return found
+end
+
+local function walkTo(hum, hrp, targetPos)
+    hum:MoveTo(targetPos)
+    local t = 0
+    while running do
+        task.wait(0.1)
+        t += 0.1
+        if (hrp.Position - targetPos).Magnitude <= 4 then break end
+        if t >= 15 then break end
+        if t % 3 < 0.15 then hum:MoveTo(targetPos) end
+    end
+end
+
+local function waitForNotify(timeout)
+    local done = false
+    local earned = 0
+    local conn
+    conn = NotifyEvent.OnClientEvent:Connect(function(msg)
+        if type(msg) == "string" and msg:lower():find("clean") then
+            -- parse money from "You made $64 for Cleaning!"
+            local amt = msg:match("%$(%d+)")
+            if amt then earned = tonumber(amt) end
+            done = true
+        end
+    end)
+    local t = 0
+    while not done and t < timeout do
+        task.wait(0.1)
+        t += 0.1
+    end
+    conn:Disconnect()
+    return done, earned
+end
+
+local function farmLoop()
+    while running do
+        local char, hrp, hum = getChar()
+        if not char or not hrp or not hum then task.wait(1) continue end
+        if hum.Health <= 0 then task.wait(3) continue end
+
+        if char:FindFirstChildOfClass("Tool") then
+            hum:UnequipTools()
+            task.wait(0.2)
+        end
+
+        local list = getAllPrompts(hrp)
+
+        if #list == 0 then
+            setStatus("All on cooldown, waiting...")
+            task.wait(5)
+            continue
+        end
+
+        local nearest = list[1]
+        setStatus("Walking to " .. nearest.prompt.Parent.Name)
+
+        walkTo(hum, hrp, nearest.pos)
+        if not running then break end
+
+        task.wait(0.3)
+        if not isPromptValid(nearest.prompt) then continue end
+
+        setStatus("Cleaning...")
+        markCleaned(nearest.prompt)
+
+        pcall(function()
+            nearest.prompt:InputHoldBegin()
+            task.wait((nearest.prompt.HoldDuration or 2) + 0.2)
+            nearest.prompt:InputHoldEnd()
+        end)
+
+        setStatus("Waiting for payout...")
+        local gotNotify, earned = waitForNotify(6)
+        if gotNotify then
+            totalMoney += earned
+            cleanCount += 1
+            setStatus("Got $" .. earned .. "! Moving on...")
+        else
+            setStatus("No notify, moving on...")
+        end
+
+        task.wait(0.3)
+    end
+end
+
+UIS.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.P then
+        running = not running
+        if running then
+            startTime = startTime or tick()
+            setHudVisible(true)
+            setStatus("Starting...")
+            task.spawn(farmLoop)
+        else
+            setStatus("Stopped")
+        end
+    end
+end)
+
+print("[CleanFarm] Loaded — Press P to toggle")
