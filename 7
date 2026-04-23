@@ -1,0 +1,112 @@
+-- Crypto Trader v5 | Street Life Remastered
+
+local RS  = game:GetService("ReplicatedStorage")
+local LP  = game:GetService("Players").LocalPlayer
+
+local BUY_BELOW      = 5000
+local SELL_ABOVE     = 8000
+local CHECK_INTERVAL = 15
+local BUY_AMOUNT     = 10  -- how many to buy per cycle
+
+local holding      = false
+local boughtAt     = 0
+local currentPrice = nil
+
+local PhoneRemote = RS:WaitForChild("Remotes"):WaitForChild("Phone")
+
+-- sniff real purchase args from game's own fires
+local mt = getrawmetatable(game)
+setreadonly(mt, false)
+local oldNamecall = mt.__namecall
+mt.__namecall = newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    if method == "FireServer" and self == PhoneRemote then
+        local args = {...}
+        if args[1] == "Crypto" then
+            if args[2] == "Purchase" and type(args[3]) == "number" then
+                currentPrice = args[3]
+            end
+        end
+    end
+    return oldNamecall(self, ...)
+end)
+setreadonly(mt, true)
+
+local function getBitcoinPrice()
+    local ok, price = pcall(function()
+        local phoneUI = LP.PlayerGui:WaitForChild("PhoneUI", 3)
+        if not phoneUI then return nil end
+        for _, v in ipairs(phoneUI:GetDescendants()) do
+            if v:IsA("TextLabel") then
+                local num = v.Text:match("%$(%d[%d,]+)")
+                if num then
+                    local n = tonumber(num:gsub(",", ""))
+                    if n and n >= 1000 and n <= 100000 then
+                        return n
+                    end
+                end
+            end
+        end
+    end)
+    return ok and price or nil
+end
+
+local function buy(price)
+    -- fire exactly like the game does it natively
+    local ok, err = pcall(function()
+        PhoneRemote:FireServer("Crypto", "Purchase", price)
+    end)
+    if ok then
+        print(string.format("[Crypto] Bought Bitcoin @ $%d", price))
+        holding  = true
+        boughtAt = price
+    else
+        print("[Crypto] Buy failed: " .. tostring(err))
+    end
+end
+
+local function sell(price)
+    local ok, err = pcall(function()
+        PhoneRemote:FireServer("Crypto", "Sell", price)
+    end)
+    if ok then
+        print(string.format("[Crypto] Sold Bitcoin @ $%d | Profit: +$%d", price, price - boughtAt))
+        holding  = false
+        boughtAt = 0
+    else
+        print("[Crypto] Sell failed: " .. tostring(err))
+    end
+end
+
+task.spawn(function()
+    print(string.format("[Crypto] Started | Buy < $%d | Sell > $%d", BUY_BELOW, SELL_ABOVE))
+    print("[Crypto] Open Phone > Crypto once to load prices...")
+
+    while true do
+        task.wait(CHECK_INTERVAL)
+
+        local price = getBitcoinPrice() or currentPrice
+        if not price then
+            print("[Crypto] No price yet")
+            continue
+        end
+
+        currentPrice = price
+
+        if not holding then
+            if price <= BUY_BELOW then
+                print(string.format("[Crypto] Price $%d <= $%d, buying...", price, BUY_BELOW))
+                buy(price)
+            else
+                print(string.format("[Crypto] Price $%d too high, waiting...", price))
+            end
+        else
+            if price >= SELL_ABOVE then
+                print(string.format("[Crypto] Price $%d >= $%d, selling...", price, SELL_ABOVE))
+                sell(price)
+            else
+                print(string.format("[Crypto] Holding | Now $%d | Target $%d | P&L $%d", price, SELL_ABOVE, price - boughtAt))
+            end
+        end
+    end
+end)
