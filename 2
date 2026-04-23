@@ -1,0 +1,168 @@
+-- Clean Farm v6 | Street Life Remastered
+
+local Players = game:GetService("Players")
+local RS      = game:GetService("ReplicatedStorage")
+local UIS     = game:GetService("UserInputService")
+local LP      = Players.LocalPlayer
+
+local running    = false
+local KEYWORDS   = {"clean", "puddle", "wash", "sink", "scrub", "wipe"}
+local COOLDOWN   = 30   -- seconds before a cleaned puddle is eligible again
+local recentlyCleanedPuddles = {}  -- {partName = tick()}
+
+local NotifyEvent = RS:WaitForChild("Remotes"):WaitForChild("Notify")
+
+local function matchesKeyword(str)
+    str = str:lower()
+    for _, kw in ipairs(KEYWORDS) do
+        if str:find(kw) then return true end
+    end
+    return false
+end
+
+local function getChar()
+    local char = LP.Character
+    if not char then return nil, nil, nil end
+    return char, char:FindFirstChild("HumanoidRootPart"), char:FindFirstChild("Humanoid")
+end
+
+local function isPromptValid(prompt)
+    return prompt
+        and prompt.Parent
+        and prompt.Enabled
+        and prompt:IsDescendantOf(workspace)
+end
+
+local function wasRecentlyCleaned(prompt)
+    local key = tostring(prompt.Parent)
+    local lastCleaned = recentlyCleanedPuddles[key]
+    if lastCleaned and (tick() - lastCleaned) < COOLDOWN then
+        return true
+    end
+    return false
+end
+
+local function markCleaned(prompt)
+    local key = tostring(prompt.Parent)
+    recentlyCleanedPuddles[key] = tick()
+end
+
+local function getAllPrompts(hrp)
+    local found = {}
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("ProximityPrompt") and isPromptValid(obj) and not wasRecentlyCleaned(obj) then
+            local a = obj.ActionText or ""
+            local o = obj.ObjectText or ""
+            local p = obj.Parent and obj.Parent.Name or ""
+            if matchesKeyword(a) or matchesKeyword(o) or matchesKeyword(p) then
+                local part = obj.Parent
+                local pos = (part:IsA("BasePart") and part.Position)
+                         or (part:IsA("Model") and part.PrimaryPart and part.PrimaryPart.Position)
+                if pos then
+                    table.insert(found, {prompt = obj, pos = pos, dist = (hrp.Position - pos).Magnitude})
+                end
+            end
+        end
+    end
+    table.sort(found, function(a, b) return a.dist < b.dist end)
+    return found
+end
+
+local function walkTo(hum, hrp, targetPos)
+    hum:MoveTo(targetPos)
+    local t = 0
+    while running do
+        task.wait(0.1)
+        t += 0.1
+        if (hrp.Position - targetPos).Magnitude <= 4 then break end
+        if t >= 15 then break end
+        if t % 3 < 0.15 then hum:MoveTo(targetPos) end
+    end
+end
+
+local function waitForNotify(timeout)
+    -- returns true if notify fires within timeout, false if timed out
+    local done = false
+    local conn
+    conn = NotifyEvent.OnClientEvent:Connect(function(msg)
+        if type(msg) == "string" and msg:lower():find("clean") then
+            done = true
+        end
+    end)
+    local t = 0
+    while not done and t < timeout do
+        task.wait(0.1)
+        t += 0.1
+    end
+    conn:Disconnect()
+    return done
+end
+
+local function farmLoop()
+    while running do
+        local char, hrp, hum = getChar()
+        if not char or not hrp or not hum then task.wait(1) continue end
+        if hum.Health <= 0 then task.wait(3) continue end
+
+        if char:FindFirstChildOfClass("Tool") then
+            hum:UnequipTools()
+            task.wait(0.2)
+        end
+
+        local list = getAllPrompts(hrp)
+
+        if #list == 0 then
+            print("[CleanFarm] All puddles on cooldown or none found, waiting 5s...")
+            task.wait(5)
+            continue
+        end
+
+        local nearest = list[1]
+        print(string.format("[CleanFarm] Walking to '%s' (%.1f studs away)", nearest.prompt.Parent.Name, nearest.dist))
+
+        walkTo(hum, hrp, nearest.pos)
+        if not running then break end
+
+        task.wait(0.3)
+
+        if not isPromptValid(nearest.prompt) then
+            print("[CleanFarm] Puddle disappeared, skipping...")
+            continue
+        end
+
+        print("[CleanFarm] Cleaning...")
+        markCleaned(nearest.prompt)  -- mark before cleaning so we don't revisit
+
+        pcall(function()
+            nearest.prompt:InputHoldBegin()
+            task.wait((nearest.prompt.HoldDuration or 2) + 0.2)
+            nearest.prompt:InputHoldEnd()
+        end)
+
+        -- wait for notify instead of fixed 4s
+        print("[CleanFarm] Waiting for payout notify...")
+        local gotNotify = waitForNotify(6)  -- 6s max fallback
+        if gotNotify then
+            print("[CleanFarm] Notify received! Moving to next puddle.")
+        else
+            print("[CleanFarm] No notify in 6s, moving anyway.")
+        end
+
+        task.wait(0.3)
+    end
+end
+
+UIS.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.P then
+        running = not running
+        if running then
+            print("[CleanFarm] ON")
+            task.spawn(farmLoop)
+        else
+            print("[CleanFarm] OFF")
+        end
+    end
+end)
+
+print("[CleanFarm] Loaded — Press P to toggle")
