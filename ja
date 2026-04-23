@@ -1,0 +1,141 @@
+-- Clean Farm v3 | Street Life Remastered
+-- Finds puddle ProximityPrompt at runtime and fires it directly (no walk needed)
+
+local Players = game:GetService("Players")
+local RS      = game:GetService("ReplicatedStorage")
+local UIS     = game:GetService("UserInputService")
+local LP      = Players.LocalPlayer
+
+local running   = false
+local INTERVAL  = 0.5  -- seconds between each fire attempt
+local RANGE     = 20   -- only trigger prompts within X studs (set higher if needed)
+
+-- keywords to match puddle/clean prompts
+local KEYWORDS = {"clean", "puddle", "wash", "sink", "scrub", "wipe"}
+
+local function matchesKeyword(str)
+    str = str:lower()
+    for _, kw in ipairs(KEYWORDS) do
+        if str:find(kw) then return true end
+    end
+    return false
+end
+
+local function findCleanPrompts()
+    local found = {}
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("ProximityPrompt") then
+            local action = obj.ActionText or ""
+            local objText = obj.ObjectText or ""
+            local parentName = obj.Parent and obj.Parent.Name or ""
+            if matchesKeyword(action) or matchesKeyword(objText) or matchesKeyword(parentName) then
+                table.insert(found, obj)
+            end
+        end
+    end
+    return found
+end
+
+local function getHRP()
+    local char = LP.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function teleportToPrompt(prompt)
+    local hrp = getHRP()
+    if not hrp then return end
+    local part = prompt.Parent
+    if part and part:IsA("BasePart") then
+        hrp.CFrame = part.CFrame + Vector3.new(0, 3, 0)
+    elseif part and part:IsA("Model") and part.PrimaryPart then
+        hrp.CFrame = part.PrimaryPart.CFrame + Vector3.new(0, 3, 0)
+    end
+    task.wait(0.1)
+end
+
+local function firePrompt(prompt)
+    -- Trigger the ProximityPrompt directly
+    local ok, err = pcall(function()
+        prompt:InputHoldBegin()
+        task.wait(prompt.HoldDuration + 0.1)
+        prompt:InputHoldEnd()
+    end)
+    if not ok then
+        -- fallback: fire via remote if prompt method fails
+        local jobRemote = RS:FindFirstChild("Remotes") and RS.Remotes:FindFirstChild("Job")
+        if jobRemote then
+            jobRemote:FireServer("clean")
+        end
+    end
+end
+
+local function farmLoop()
+    while running do
+        local prompts = findCleanPrompts()
+
+        if #prompts == 0 then
+            -- no prompt found, try Job remote directly
+            local jobRemote = RS:FindFirstChild("Remotes") and RS.Remotes:FindFirstChild("Job")
+            if jobRemote then
+                pcall(function() jobRemote:FireServer("clean") end)
+            end
+            task.wait(INTERVAL)
+            continue
+        end
+
+        local hrp = getHRP()
+        for _, prompt in ipairs(prompts) do
+            if not running then break end
+            if not prompt or not prompt.Parent then continue end
+
+            -- teleport to it if too far
+            if hrp then
+                local part = prompt.Parent
+                local pos = (part:IsA("BasePart") and part.Position)
+                         or (part:IsA("Model") and part.PrimaryPart and part.PrimaryPart.Position)
+                if pos and (hrp.Position - pos).Magnitude > RANGE then
+                    teleportToPrompt(prompt)
+                end
+            end
+
+            firePrompt(prompt)
+            task.wait(INTERVAL)
+        end
+    end
+end
+
+-- debug: print found prompts on load
+task.spawn(function()
+    task.wait(2) -- wait for workspace to load
+    local prompts = findCleanPrompts()
+    if #prompts > 0 then
+        print("[CleanFarm] Found " .. #prompts .. " clean prompt(s):")
+        for i, p in ipairs(prompts) do
+            print(string.format("  %d. Action='%s' Object='%s' Parent='%s'", i, p.ActionText, p.ObjectText, p.Parent and p.Parent.Name or "?"))
+        end
+    else
+        print("[CleanFarm] No prompts found by keyword. Will try Job remote directly.")
+        -- list ALL prompts so you can see what's there
+        print("[CleanFarm] All ProximityPrompts in workspace:")
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if obj:IsA("ProximityPrompt") then
+                print(string.format("  Action='%s' Object='%s' Parent='%s'", obj.ActionText, obj.ObjectText, obj.Parent and obj.Parent.Name or "?"))
+            end
+        end
+    end
+end)
+
+UIS.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.P then
+        running = not running
+        if running then
+            print("[CleanFarm] ON")
+            task.spawn(farmLoop)
+        else
+            print("[CleanFarm] OFF")
+        end
+    end
+end)
+
+print("[CleanFarm] Loaded — Press P to toggle | Check console for found prompts")
