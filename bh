@@ -1,0 +1,172 @@
+local Players = game:GetService("Players")
+local VIM = game:GetService("VirtualInputManager")
+local UIS = game:GetService("UserInputService")
+
+local LP = Players.LocalPlayer
+local Mouse = LP:GetMouse()
+
+repeat task.wait() until game:IsLoaded()
+
+-- // CONFIG
+local PLANT_DELAY = 0.3
+local ENABLED = true
+
+local WANTED_SEEDS = {
+    "Easter Candy Carrot",
+    "Easter Chocolate Berry",
+    "Easter Gumball",
+    "Easter Liquorice",
+    "Easter Sugar Melon",
+    "Easter Chocolate Coconut",
+    "Easter Gummy Cactus",
+    "Easter Sour Lemon",
+    "Easter Eggfruit",
+}
+
+local function normalize(s)
+    return s:lower():gsub("%s+", " "):match("^%s*(.-)%s*$")
+end
+
+local wantedLower = {}
+for _, name in ipairs(WANTED_SEEDS) do
+    wantedLower[normalize(name)] = true
+end
+
+-- partial match — handles "Easter Candy Carrot Seed [X7]"
+local function isWantedSeed(tool)
+    if not tool:IsA("Tool") then return false end
+    local toolLower = normalize(tool.Name)
+    for wanted in pairs(wantedLower) do
+        if toolLower:find(wanted, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function getSeeds()
+    local seeds = {}
+    for _, tool in ipairs(LP.Backpack:GetChildren()) do
+        if isWantedSeed(tool) then table.insert(seeds, tool) end
+    end
+    local char = LP.Character
+    if char then
+        for _, tool in ipairs(char:GetChildren()) do
+            if isWantedSeed(tool) then table.insert(seeds, tool) end
+        end
+    end
+    return seeds
+end
+
+local function getPlot()
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj.Name == "Plot" and obj:FindFirstChild("Owner") then
+            if obj.Owner.Value == LP then return obj end
+        end
+    end
+    for _, folder in ipairs({"Plots", "Gardens", "PlayerPlots"}) do
+        local f = workspace:FindFirstChild(folder)
+        if f then
+            for _, plot in ipairs(f:GetChildren()) do
+                local owner = plot:FindFirstChild("Owner") or plot:FindFirstChild("PlayerName")
+                if owner and (owner.Value == LP or owner.Value == LP.Name) then
+                    return plot
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function getEmptyTiles(plot)
+    local tiles = {}
+    for _, obj in ipairs(plot:GetDescendants()) do
+        if (obj.Name == "Tile" or obj.Name == "PlantSpot" or obj.Name == "Slot" or obj.Name == "GardenTile")
+            and obj:IsA("BasePart") then
+            local hasPlant = false
+            for _, child in ipairs(obj:GetChildren()) do
+                if child:IsA("Model") or child.Name == "Plant" then
+                    hasPlant = true; break
+                end
+            end
+            if not hasPlant then table.insert(tiles, obj) end
+        end
+    end
+    return tiles
+end
+
+local function plantOnTile(tile, seed)
+    local char = LP.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    hrp.CFrame = CFrame.new(tile.Position + Vector3.new(0, 3, 0))
+    task.wait(0.15)
+
+    seed.Parent = char
+    task.wait(0.1)
+
+    local ok = pcall(function() seed:Activate() end)
+    if not ok then
+        pcall(function()
+            VIM:SendMouseButtonEvent(Mouse.X, Mouse.Y, 0, true, game, 1)
+            task.wait(0.05)
+            VIM:SendMouseButtonEvent(Mouse.X, Mouse.Y, 0, false, game, 1)
+        end)
+    end
+
+    task.wait(PLANT_DELAY)
+end
+
+print("Auto Plant started | P = toggle")
+
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if not ENABLED then continue end
+
+        local seeds = getSeeds()
+        if #seeds == 0 then
+            print("No wanted seeds in backpack, waiting...")
+            task.wait(5)
+            continue
+        end
+
+        local plot = getPlot()
+        if not plot then
+            print("No plot found, printing workspace children:")
+            for _, obj in ipairs(workspace:GetChildren()) do
+                print(" -", obj.Name)
+            end
+            task.wait(5)
+            continue
+        end
+
+        local tiles = getEmptyTiles(plot)
+        if #tiles == 0 then
+            task.wait(3)
+            continue
+        end
+
+        print(("Planting — %d tiles empty, %d seed types available"):format(#tiles, #seeds))
+
+        local seedIdx = 1
+        for _, tile in ipairs(tiles) do
+            if not ENABLED then break end
+            seeds = getSeeds()
+            if #seeds == 0 then print("Ran out of wanted seeds"); break end
+            local seed = seeds[seedIdx] or seeds[1]
+            pcall(plantOnTile, tile, seed)
+            seedIdx = (seedIdx % #seeds) + 1
+        end
+    end
+end)
+
+UIS.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.P then
+        ENABLED = not ENABLED
+        print("Auto Plant: " .. (ENABLED and "ON" or "OFF"))
+    end
+end)
