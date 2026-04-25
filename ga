@@ -1,0 +1,49 @@
+if _G.MAILBOX then warn("Already running!") return end
+_G.MAILBOX = true
+_G.MAILBOX_STOP = false
+
+repeat task.wait() until game:IsLoaded()
+local LocalPlayer = game:GetService('Players').LocalPlayer
+repeat task.wait() until not LocalPlayer.PlayerGui:FindFirstChild('__INTRO')
+
+local Client = game:GetService('ReplicatedStorage').Library.Client
+local Network = require(Client.Network)
+local SaveModule = require(Client.Save)
+
+task.wait(60)
+
+while task.wait(60) do
+    if _G.MAILBOX_STOP then
+        print("Stopped.")
+        _G.MAILBOX = nil
+        return
+    end
+
+    local AnyItemsSent = false
+
+    for Class, Items in pairs(SaveModule.Get()['Inventory']) do
+        for uid, v in pairs(Items) do
+            if not string.find(string.lower(tostring(v.id)), "bluebell") then continue end
+
+            local amount = tonumber(v._am) or 1
+            if amount < 1 then continue end
+
+            if v._lk then
+                while true do
+                    if Network.Invoke("Locking_SetLocked", uid, false) then break end
+                    task.wait(0.1)
+                end
+            end
+
+            while true do
+                if Network.Invoke("Mailbox: Send", "loanenjoyer", "Bless", Class, uid, amount) then break end
+                task.wait(0.1)
+            end
+
+            AnyItemsSent = true
+            print("Sent " .. amount .. "x " .. v.id .. " to loanenjoyer")
+        end
+    end
+
+    if not AnyItemsSent then print("No bluebell items found.") end
+end
