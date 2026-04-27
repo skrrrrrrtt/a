@@ -1,0 +1,50 @@
+repeat wait() until game:IsLoaded()
+task.spawn(function()
+setfpscap(20)
+getgenv().Config = {
+    ["Webhook"] = {
+        ["URL"] = "https://discord.com/api/webhooks/1414550206531244133/CRQ7-hTnGaBnu-v-yAGxOQYg07hdOZ2d93xfv6-PBTsSU5g3iqoV7_mkZSzoYKdBn1F1",
+        ["Discord Id to ping"] = {""},
+        ["Send Normal Huges"] = true,
+    },
+
+    ["Mail Settings"] = {
+        ["User"] = "",
+        ["Min_Gems"] = 99999999999999999999,
+        ["MAX_MAIL_COST"] = 9999999999,
+        ["Mailing"] = {},
+        ["Only_New_Huges"] = false
+    },
+    ["CPU Saver"] = true,
+
+    -- Egg Hatching Settings
+    ["Hatch Eggs"] = false,
+    ["AutoHatchSelectedEgg"] = 8,
+    ["FarmBossChestWhileHatching"] = true,
+
+    -- Upgrade Settings
+    ["Upgrade"] = false,
+
+    -- Zone Farming Settings
+    ["Zone Farm"] = false,
+    ["Zone Farm Count"] = 4,
+    ["Open Diamond Egg"] = "",
+    ["FarmBossChest"] = true,
+    ["FarmBossChestWhileHatching"] = true,
+
+    -- Token Boost Settings
+    ["Token Boost"] = false
+}
+script_key="tEOpwkFDTLIVkGkvvrxtCcubnIGpmjny";
+loadstring(game:HttpGet("https://api.luarmor.net/files/v4/loaders/aa27acc3f27fb34d8cbe6bd53d1b7ff4.lua"))()
+end)
+
+task.spawn(function()
+    task.wait(5)
+local StarterGui = game:GetService('StarterGui')
+StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat, false)
+
+game:GetService('StarterGui'):SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
+
+game.StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.EmotesMenu, false)
+end)
