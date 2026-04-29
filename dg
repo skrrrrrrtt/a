@@ -1,0 +1,834 @@
+-- ╔══════════════════════════════════════════╗
+-- ║         DIGSITE FARM  v2.0               ║
+-- ╚══════════════════════════════════════════╝
+
+-- ================================================
+-- CONFIG
+-- ================================================
+local OPTIMIZE         = false
+local RUNNING          = true
+local WEBHOOK_URL      = "https://discord.com/api/webhooks/1496669423241789640/bh2vCOFL1ILrur3RV1BAHYIzhzhrXVxb7M4dbh8VOD9m6gUUODh4f5Ua0hfMxj6C4bAg"
+local WEBHOOK_INTERVAL = 5  -- minutes
+-- ================================================
+
+repeat task.wait() until game:IsLoaded()
+
+if game.PlaceId ~= 8737899170 then
+    while true do
+        game.ReplicatedStorage.Network.World1Teleport:InvokeServer()
+        wait(5)
+    end
+end
+
+-- ================================================
+-- SERVICES
+-- ================================================
+local Players           = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace         = game:GetService("Workspace")
+local HttpService       = game:GetService("HttpService")
+local TeleportService   = game:GetService("TeleportService")
+local CoreGui           = game:GetService("CoreGui")
+local LocalPlayer       = Players.LocalPlayer
+local character         = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local HumanoidRootPart  = character:WaitForChild("HumanoidRootPart")
+
+-- ================================================
+-- SHARED STATE
+-- ================================================
+local MagicBucketData = {"Bucket O' Magic"}
+local BucketData      = {"Bucket"}
+local ItemTable       = {"Diamonds"}
+local ItemHuge        = {"Huge"}
+
+local MagicBucketAM  = 0
+local MagicBucketUID = ""
+local BucketAmount   = 0
+local DiamondsID     = 0
+local DiamondsAmount = 0
+local hugeid         = ""
+local hugeamount     = 0
+
+local DigsTotal    = 0
+local PotionsSent  = 0
+local SessionStart = os.time()
+local NextWebhookIn = WEBHOOK_INTERVAL * 60
+
+local WebhookEnabled = true
+
+local TargetPositions = {
+    "6,4","2,8","2,14","4,8","4,10","2,2","2,4","2,6","2,10",
+    "2,12","4,14","6,14","8,14","10,14","12,14","14,14","14,12",
+    "14,10","14,8","14,6","14,4","14,2","12,2","12,4","12,6",
+    "12,8","12,10","12,12","10,12","10,10","10,8","10,6","10,4",
+    "10,2","8,2","6,2","4,2","4,4","4,6","4,12","6,12","8,12",
+    "8,10","8,8","8,6","8,4","6,6","6,8","6,10"
+}
+
+-- ================================================
+-- HELPERS
+-- ================================================
+local function FormatTime(s)
+    s = math.max(0, math.floor(s))
+    return string.format("%02d:%02d:%02d", math.floor(s/3600), math.floor((s%3600)/60), s%60)
+end
+
+local function GetItemInfo(cls, names)
+    local out = {}
+    local ok, inv = pcall(function()
+        return require(ReplicatedStorage:WaitForChild("Library"):WaitForChild("Client").Save).Get().Inventory
+    end)
+    if not ok then return out end
+    for uid, item in pairs(inv[cls]) do
+        if table.find(names, item.id) then
+            table.insert(out, {uid=uid, data=item})
+        end
+    end
+    return out
+end
+
+local function TP(pos)
+    HumanoidRootPart.CFrame = CFrame.new(pos + Vector3.new(0,5,0))
+end
+
+local function GetActive()
+    local t = Workspace:FindFirstChild("__THINGS")
+    if not t then return nil end
+    local c = t:FindFirstChild("__INSTANCE_CONTAINER")
+    if not c then return nil end
+    return c:FindFirstChild("Active")
+end
+
+-- ================================================
+-- FULL-SCREEN STATS UI  (CoreGui, matches reference)
+-- ================================================
+pcall(function()
+    for _, v in pairs(CoreGui:GetChildren()) do
+        if v.Name == "DigsiteFarmUI" then v:Destroy() end
+    end
+end)
+
+task.wait(0.5)
+
+local SG = Instance.new("ScreenGui")
+SG.Name             = "DigsiteFarmUI"
+SG.IgnoreGuiInset   = true
+SG.ResetOnSpawn     = false
+SG.ZIndexBehavior   = Enum.ZIndexBehavior.Global
+SG.DisplayOrder     = 999999999
+SG.Parent           = CoreGui
+
+-- Auto-scale like reference script
+local UIScale = Instance.new("UIScale", SG)
+local function updateScale()
+    local cam = workspace.CurrentCamera
+    if cam then UIScale.Scale = cam.ViewportSize.Y / 1080 end
+end
+updateScale()
+workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
+
+-- Full black background
+local BG = Instance.new("Frame")
+BG.AnchorPoint      = Vector2.new(0.5, 0.5)
+BG.Position         = UDim2.fromScale(0.5, 0.5)
+BG.Size             = UDim2.fromScale(2, 2)
+BG.BackgroundColor3 = Color3.new(0, 0, 0)
+BG.BorderSizePixel  = 0
+BG.ZIndex           = 1
+BG.Parent           = SG
+
+-- ── STAT ROWS ─────────────────────────────────
+-- Each stat is a label pair (key : value) stacked vertically
+local statDefs = {
+    { key="status",   prefix="STATUS" },
+    { key="session",  prefix="SESSION" },
+    { key="buckets",  prefix="BUCKETS" },
+    { key="magic",    prefix="MAGIC BUCKET" },
+    { key="potions",  prefix="HUGE POTIONS" },
+    { key="diamonds", prefix="DIAMONDS" },
+    { key="digs",     prefix="DIGS" },
+    { key="sent",     prefix="POTIONS MAILED" },
+    { key="optimize", prefix="OPTIMIZE" },
+    { key="webhook",  prefix="NEXT WEBHOOK" },
+}
+
+local TOTAL       = #statDefs
+local ROW_HEIGHT  = 72   -- px at 1080p base
+local GAP         = 8
+local BLOCK       = TOTAL * ROW_HEIGHT + (TOTAL-1) * GAP
+local START_Y     = (1080 - BLOCK) / 2
+
+local ValueLabels = {}
+
+for i, def in ipairs(statDefs) do
+    local rowY = START_Y + (i-1) * (ROW_HEIGHT + GAP)
+
+    -- key label (grey, left-aligned)
+    local kLbl = Instance.new("TextLabel")
+    kLbl.Size                  = UDim2.new(0, 480, 0, ROW_HEIGHT)
+    kLbl.Position              = UDim2.new(0.5, -480, 0, rowY)
+    kLbl.BackgroundTransparency = 1
+    kLbl.Text                  = def.prefix .. " :"
+    kLbl.TextColor3            = Color3.fromRGB(150, 150, 150)
+    kLbl.Font                  = Enum.Font.Code
+    kLbl.TextSize              = 48
+    kLbl.TextXAlignment        = Enum.TextXAlignment.Right
+    kLbl.TextStrokeTransparency = 0.5
+    kLbl.TextStrokeColor3      = Color3.fromRGB(0, 0, 0)
+    kLbl.ZIndex                = 2
+    kLbl.Parent                = SG
+
+    -- value label (yellow, right-aligned)
+    local vLbl = Instance.new("TextLabel")
+    vLbl.Size                  = UDim2.new(0, 460, 0, ROW_HEIGHT)
+    vLbl.Position              = UDim2.new(0.5, 20, 0, rowY)
+    vLbl.BackgroundTransparency = 1
+    vLbl.Text                  = "–"
+    vLbl.TextColor3            = Color3.fromRGB(255, 220, 0)
+    vLbl.Font                  = Enum.Font.Code
+    vLbl.TextSize              = 48
+    vLbl.TextXAlignment        = Enum.TextXAlignment.Left
+    vLbl.TextStrokeTransparency = 0.3
+    vLbl.TextStrokeColor3      = Color3.fromRGB(0, 0, 0)
+    vLbl.ZIndex                = 2
+    vLbl.Parent                = SG
+
+    ValueLabels[def.key] = vLbl
+end
+
+-- ── CLOSE BUTTON ──────────────────────────────
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size             = UDim2.fromOffset(160, 44)
+closeBtn.Position         = UDim2.new(0.5, -80, 1, -70)
+closeBtn.Text             = "CLOSE"
+closeBtn.Font             = Enum.Font.GothamBold
+closeBtn.TextSize         = 20
+closeBtn.BackgroundColor3 = Color3.fromRGB(220, 20, 60)
+closeBtn.TextColor3       = Color3.new(1, 1, 1)
+closeBtn.ZIndex           = 10
+closeBtn.Parent           = SG
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
+
+-- ── OPEN BUTTON (always visible when closed) ──
+local openBtn = Instance.new("TextButton")
+openBtn.Size             = UDim2.fromOffset(160, 44)
+openBtn.Position         = UDim2.new(0.5, -80, 1, -70)
+openBtn.Text             = "OPEN STATS"
+openBtn.Font             = Enum.Font.GothamBold
+openBtn.TextSize         = 20
+openBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+openBtn.TextColor3       = Color3.new(1, 1, 1)
+openBtn.Visible          = false
+openBtn.ZIndex           = 10
+openBtn.Parent           = SG
+Instance.new("UICorner", openBtn).CornerRadius = UDim.new(0, 8)
+
+-- ── TOGGLE LOGIC ──────────────────────────────
+local uiVisible = true
+
+local function SetUIVisible(v)
+    uiVisible   = v
+    BG.Visible  = v
+    closeBtn.Visible = v
+    openBtn.Visible  = not v
+    for _, vLbl in pairs(ValueLabels) do
+        vLbl.Parent.Visible = true  -- SG always parented, just hide BG
+    end
+    -- hide/show all stat labels
+    for _, child in ipairs(SG:GetChildren()) do
+        if child:IsA("TextLabel") then
+            child.Visible = v
+        end
+    end
+    openBtn.Visible = not v
+end
+
+closeBtn.MouseButton1Click:Connect(function() SetUIVisible(false) end)
+openBtn.MouseButton1Click:Connect(function()  SetUIVisible(true)  end)
+
+-- ── BUTTON ROW (START/STOP · OPT · WEBHOOK) ───
+-- Shown at bottom-left corner of stats screen
+local function MakeControlBtn(text, color, xPos)
+    local b = Instance.new("TextButton")
+    b.Size             = UDim2.fromOffset(150, 38)
+    b.Position         = UDim2.new(0, xPos, 1, -70)
+    b.Text             = text
+    b.Font             = Enum.Font.GothamBold
+    b.TextSize         = 16
+    b.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    b.TextColor3       = color
+    b.ZIndex           = 10
+    b.Parent           = SG
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+    local s = Instance.new("UIStroke", b)
+    s.Color = color; s.Thickness = 1
+    return b
+end
+
+local BtnStart = MakeControlBtn("⏹ STOP",    Color3.fromRGB(255,70,70),  14)
+local BtnOpt   = MakeControlBtn("⚙ OPT:OFF", Color3.fromRGB(80,130,255), 172)
+local BtnWH    = MakeControlBtn("🔔 WH:ON",  Color3.fromRGB(255,200,0),  330)
+
+BtnStart.MouseButton1Click:Connect(function()
+    RUNNING = not RUNNING
+    if RUNNING then
+        BtnStart.Text="⏹ STOP"; BtnStart.TextColor3=Color3.fromRGB(255,70,70)
+        BtnStart:FindFirstChildOfClass("UIStroke").Color=Color3.fromRGB(255,70,70)
+    else
+        BtnStart.Text="▶ START"; BtnStart.TextColor3=Color3.fromRGB(0,220,100)
+        BtnStart:FindFirstChildOfClass("UIStroke").Color=Color3.fromRGB(0,220,100)
+    end
+end)
+
+BtnOpt.MouseButton1Click:Connect(function()
+    OPTIMIZE = not OPTIMIZE
+    if OPTIMIZE then
+        BtnOpt.Text="⚙ OPT:ON"; BtnOpt.TextColor3=Color3.fromRGB(0,220,100)
+        BtnOpt:FindFirstChildOfClass("UIStroke").Color=Color3.fromRGB(0,220,100)
+    else
+        BtnOpt.Text="⚙ OPT:OFF"; BtnOpt.TextColor3=Color3.fromRGB(80,130,255)
+        BtnOpt:FindFirstChildOfClass("UIStroke").Color=Color3.fromRGB(80,130,255)
+    end
+end)
+
+BtnWH.MouseButton1Click:Connect(function()
+    WebhookEnabled = not WebhookEnabled
+    if WebhookEnabled then
+        BtnWH.Text="🔔 WH:ON"; BtnWH.TextColor3=Color3.fromRGB(255,200,0)
+        BtnWH:FindFirstChildOfClass("UIStroke").Color=Color3.fromRGB(255,200,0)
+    else
+        BtnWH.Text="🔕 WH:OFF"; BtnWH.TextColor3=Color3.fromRGB(100,100,100)
+        BtnWH:FindFirstChildOfClass("UIStroke").Color=Color3.fromRGB(100,100,100)
+    end
+end)
+
+-- ── STATS UPDATE LOOP ─────────────────────────
+task.spawn(function()
+    while task.wait(1) do
+        local session = os.time() - SessionStart
+
+        ValueLabels.status.Text   = RUNNING and "RUNNING" or "PAUSED"
+        ValueLabels.status.TextColor3 = RUNNING
+            and Color3.fromRGB(0,220,100) or Color3.fromRGB(255,160,0)
+
+        ValueLabels.session.Text  = FormatTime(session)
+        ValueLabels.buckets.Text  = tostring(BucketAmount)
+        ValueLabels.magic.Text    = tostring(MagicBucketAM)
+        ValueLabels.potions.Text  = tostring(hugeamount)
+        ValueLabels.diamonds.Text = tostring(DiamondsAmount)
+        ValueLabels.digs.Text     = tostring(DigsTotal)
+        ValueLabels.sent.Text     = tostring(PotionsSent)
+
+        ValueLabels.optimize.Text = OPTIMIZE and "ON" or "OFF"
+        ValueLabels.optimize.TextColor3 = OPTIMIZE
+            and Color3.fromRGB(0,220,100) or Color3.fromRGB(80,130,255)
+
+        ValueLabels.webhook.Text = WebhookEnabled
+            and FormatTime(NextWebhookIn) or "DISABLED"
+        ValueLabels.webhook.TextColor3 = WebhookEnabled
+            and Color3.fromRGB(255,200,0) or Color3.fromRGB(100,100,100)
+    end
+end)
+
+-- ================================================
+-- WEBHOOK
+-- ================================================
+local function SendWebhook()
+    if not WebhookEnabled then return end
+    if WEBHOOK_URL == "YOUR_WEBHOOK_URL_HERE" or WEBHOOK_URL == "" then return end
+    local session = os.time() - SessionStart
+    local body = HttpService:JSONEncode({
+        embeds = {{
+            title = "🪣  Digsite Farm Report",
+            color = 0x00DC64,
+            fields = {
+                {name="Session",        value=FormatTime(session),     inline=true},
+                {name="Buckets",        value=tostring(BucketAmount),   inline=true},
+                {name="Magic Bucket",   value=tostring(MagicBucketAM),  inline=true},
+                {name="Huge Potions",   value=tostring(hugeamount),     inline=true},
+                {name="Potions Mailed", value=tostring(PotionsSent),    inline=true},
+                {name="Diamonds",       value=tostring(DiamondsAmount), inline=true},
+                {name="Total Digs",     value=tostring(DigsTotal),      inline=true},
+                {name="Optimize",       value=OPTIMIZE and "ON" or "OFF", inline=true},
+            },
+            footer={text="Digsite Farm v2.0 • "..os.date("!%Y-%m-%d %H:%M UTC")}
+        }}
+    })
+    pcall(function()
+        game:HttpPost(WEBHOOK_URL, body, false, "application/json")
+    end)
+end
+
+task.spawn(function()
+    while task.wait(1) do
+        NextWebhookIn = NextWebhookIn - 1
+        if NextWebhookIn <= 0 then
+            NextWebhookIn = WEBHOOK_INTERVAL * 60
+            SendWebhook()
+        end
+    end
+end)
+
+-- ================================================
+-- ITEM TRACKER
+-- ================================================
+task.spawn(function()
+    while task.wait(1) do
+        for _, info in pairs(GetItemInfo("Misc", MagicBucketData)) do
+            if info.data._am then MagicBucketAM=info.data._am; MagicBucketUID=info.uid end
+        end
+        for _, info in pairs(GetItemInfo("Misc", BucketData)) do
+            if info.data._am then BucketAmount=info.data._am end
+        end
+        for _, info in pairs(GetItemInfo("Currency", ItemTable)) do
+            if info.data._am and info.data.id=="Diamonds" then
+                DiamondsID=info.uid; DiamondsAmount=info.data._am
+            end
+        end
+        for _, info in pairs(GetItemInfo("Potion", ItemHuge)) do
+            if info.data._am and info.data.id=="Huge" then
+                hugeid=info.uid; hugeamount=info.data._am
+            end
+        end
+    end
+end)
+
+-- ================================================
+-- ORB + LOOTBAG COLLECT
+-- ================================================
+task.spawn(function()
+    while task.wait() do
+        local things = workspace:FindFirstChild("__THINGS")
+        if things and things:FindFirstChild("Orbs") then
+            for _, orb in ipairs(things.Orbs:GetChildren()) do
+                ReplicatedStorage.Network["Orbs: Collect"]:FireServer({tonumber(orb.Name)})
+                orb:Destroy()
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait() do
+        local things = workspace:FindFirstChild("__THINGS")
+        local bags = things and things:FindFirstChild("Lootbags")
+        if bags then
+            for _, bag in ipairs(bags:GetChildren()) do
+                ReplicatedStorage.Network.Lootbags_Claim:FireServer({tostring(bag)})
+                bag:Destroy()
+            end
+        end
+    end
+end)
+
+-- ================================================
+-- MAIL CLAIM
+-- ================================================
+task.spawn(function()
+    while task.wait(1) do
+        local gui = LocalPlayer.PlayerGui:FindFirstChild("_MACHINES")
+        if gui then
+            local mb = gui:FindFirstChild("MailboxMachine")
+            if mb then
+                local gf = mb:FindFirstChild("Frame") and mb.Frame:FindFirstChild("GiftsFrame")
+                if gf then
+                    local itf = gf:FindFirstChild("ItemsFrame")
+                    if itf then
+                        local fc = itf:FindFirstChildWhichIsA("Frame")
+                        if fc then
+                            ReplicatedStorage:WaitForChild("Network")
+                                :WaitForChild("Mailbox: Claim"):InvokeServer({{fc.Name}})
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- ================================================
+-- XP POTION
+-- ================================================
+pcall(function()
+    ReplicatedStorage.Network:FindFirstChild("XPPotions: Consume")
+        :InvokeServer("Ultra Mastery", 1, "Digging")
+end)
+
+-- ================================================
+-- CONVERT + MAIL POTIONS
+-- ================================================
+task.spawn(function()
+    while task.wait(5) do
+        if MagicBucketAM > 16 then
+            ReplicatedStorage.Network.MagicMachine_Activate:InvokeServer("Huge Potion")
+            task.wait(3)
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait(1) do
+        if hugeamount > 50 then
+            local amt = hugeamount
+            ReplicatedStorage.Network:FindFirstChild("Mailbox: Send")
+                :InvokeServer("giftbatch12","best gang","Potion",hugeid,hugeamount)
+            PotionsSent = PotionsSent + amt
+        end
+    end
+end)
+
+-- ================================================
+-- SHOVEL CHECK
+-- ================================================
+do
+    local t = Workspace:FindFirstChild("__THINGS")
+    if t and t:FindFirstChild("Instances") then
+        local inst = t.Instances
+        local ads  = inst:FindFirstChild("AdvancedDigsite")
+        if ads and ads:FindFirstChild("Teleports") then
+            local enter = ads.Teleports:FindFirstChild("Enter")
+            if enter then
+                local pb  = enter:FindFirstChild("PortalBillboard")
+                local lbl = pb and pb:FindFirstChild("Label")
+                if lbl and lbl.Text == "You must obtain a shovel from the Fossil Digsite!" then
+                    local ds = inst:FindFirstChild("Digsite")
+                    if ds and ds:FindFirstChild("Teleports") then
+                        HumanoidRootPart.CFrame = CFrame.new(
+                            ds.Teleports:FindFirstChild("Enter").Position)
+                    end
+                    task.wait(8)
+                    ReplicatedStorage:WaitForChild("Network")
+                        :WaitForChild("Instancing_FireCustomFromClient")
+                        :FireServer("Digsite","ClaimShovel")
+                    task.wait(1)
+                    if ds and ds:FindFirstChild("Teleports") then
+                        HumanoidRootPart.CFrame = CFrame.new(
+                            ds.Teleports:FindFirstChild("Leave").Position)
+                    end
+                    task.wait(8)
+                end
+            end
+        end
+    end
+end
+
+-- ================================================
+-- TELEPORT MANAGER
+-- ================================================
+task.spawn(function()
+    while task.wait(2) do
+        if not RUNNING then continue end
+        local active = GetActive()
+        if not active then continue end
+
+        if not active:FindFirstChild("AdvancedDigsite") then
+            local t2 = Workspace:FindFirstChild("__THINGS")
+            repeat
+                local inst = t2 and t2:FindFirstChild("Instances")
+                local ads  = inst and inst:FindFirstChild("AdvancedDigsite")
+                local tps  = ads and ads:FindFirstChild("Teleports")
+                local enter = tps and tps:FindFirstChild("Enter")
+                if enter then
+                    local tp = enter.Position
+                    repeat task.wait(1)
+                        HumanoidRootPart.CFrame = CFrame.new(tp + Vector3.new(0,100,0))
+                    until (HumanoidRootPart.Position - tp).Magnitude <= 300
+                    task.wait(1)
+                    HumanoidRootPart.CFrame = CFrame.new(tp)
+                    task.wait(20)
+                end
+            until active:FindFirstChild("AdvancedDigsite")
+        end
+
+        local ads = active:FindFirstChild("AdvancedDigsite")
+        if ads and ads:FindFirstChild("Important") then
+            local AB = ads.Important:FindFirstChild("ActiveBlocks")
+            if AB then
+                local has = false
+                for _, p in ipairs(AB:GetChildren()) do
+                    if p:IsA("BasePart") then has=true; break end
+                end
+                if not has then
+                    local t3   = Workspace:FindFirstChild("__THINGS")
+                    local inst = t3 and t3:FindFirstChild("Instances")
+                    local tps  = inst and inst:FindFirstChild("AdvancedDigsite")
+                        and inst.AdvancedDigsite:FindFirstChild("Teleports")
+                    if tps then
+                        local lp = tps:FindFirstChild("Leave") and tps.Leave.Position
+                        local ep = tps:FindFirstChild("Enter") and tps.Enter.Position
+                        if lp and ep then
+                            repeat HumanoidRootPart.CFrame=CFrame.new(lp); task.wait(20)
+                            until (HumanoidRootPart.Position - ep).Magnitude <= 300
+                            repeat HumanoidRootPart.CFrame=CFrame.new(ep); task.wait(20)
+                            until active:FindFirstChild("AdvancedDigsite")
+                            task.wait(1)
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- ================================================
+-- OPTIMIZATION
+-- ================================================
+task.spawn(function()
+    while task.wait() do
+        if not OPTIMIZE then continue end
+        for _, inst in ipairs(workspace:GetChildren()) do
+            if inst.Name=="ALWAYS_RENDERING" or inst.Name=="Border" or inst.Name=="Map" then
+                inst:Destroy()
+            end
+        end
+        local active = GetActive()
+        if active and active:FindFirstChild("AdvancedDigsite") then
+            for _, child in ipairs(active.AdvancedDigsite:GetChildren()) do
+                if child.Name=="Map" or (
+                    child.Name~="ClientModule" and
+                    child.Name~="Common" and
+                    child.Name~="Important") then
+                    child:Destroy()
+                end
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait() do
+        if not OPTIMIZE then continue end
+        local active = GetActive()
+        if not (active and active:FindFirstChild("AdvancedDigsite")) then continue end
+        local imp = active.AdvancedDigsite:FindFirstChild("Important")
+        local AB  = imp and imp:FindFirstChild("ActiveBlocks")
+        if not AB then continue end
+        for _, part in ipairs(AB:GetChildren()) do
+            if part:IsA("BasePart") then
+                local coord = part:GetAttribute("Coord")
+                if coord then
+                    local n   = string.split(tostring(coord), ",")
+                    local key = string.format("%d,%d", tonumber(n[1]), tonumber(n[3]))
+                    if not table.find(TargetPositions, key)
+                        and part.BrickColor ~= BrickColor.new("Royal purple")
+                        and part.BrickColor ~= BrickColor.new("Really black") then
+                        part:Destroy()
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- ================================================
+-- CHEST TIMER
+-- ================================================
+local ActiveChests
+
+task.spawn(function()
+    while task.wait(1) do
+        local active = GetActive()
+        if active and active:FindFirstChild("AdvancedDigsite") then
+            local imp = active.AdvancedDigsite:FindFirstChild("Important")
+            if imp and imp:FindFirstChild("ActiveChests") then
+                ActiveChests = imp.ActiveChests
+                for _, c in ipairs(ActiveChests:GetChildren()) do
+                    if tonumber(c.Name) == nil then c.Name = "0" end
+                end
+            end
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait(1) do
+        if ActiveChests then
+            for _, c in ipairs(ActiveChests:GetChildren()) do
+                local n = tonumber(c.Name)
+                if n then
+                    n = n + 1; c.Name = tostring(n)
+                    if n > 5 then c:Destroy() end
+                end
+            end
+        end
+    end
+end)
+
+-- ================================================
+-- FARMING LOGIC
+-- ================================================
+local function TeleportToPurple()
+    local active = GetActive()
+    if not (active and active:FindFirstChild("AdvancedDigsite")) then return false end
+    local imp = active.AdvancedDigsite:FindFirstChild("Important")
+    local AB  = imp and imp:FindFirstChild("ActiveBlocks")
+    if not AB then return false end
+    for _, part in ipairs(AB:GetChildren()) do
+        if part:IsA("BasePart") and part.BrickColor == BrickColor.new("Royal purple") then
+            part.Name = "TargetBlock"
+            repeat
+                TP(part.Position)
+                ReplicatedStorage.Network.Instancing_FireCustomFromClient
+                    :FireServer("AdvancedDigsite","DigBlock",part:GetAttribute("Coord"))
+                DigsTotal = DigsTotal + 1
+                task.wait()
+            until not AB:FindFirstChild("TargetBlock")
+            return true
+        end
+    end
+    return false
+end
+
+local function TeleportToChest()
+    local active = GetActive()
+    if not (active and active:FindFirstChild("AdvancedDigsite")) then return false end
+    local imp = active.AdvancedDigsite:FindFirstChild("Important")
+    if not (imp and imp:FindFirstChild("ActiveChests")) then return false end
+    local chests = imp.ActiveChests
+    local best, bestD = nil, math.huge
+    for _, c in ipairs(chests:GetChildren()) do
+        if c:IsA("Model") and c:FindFirstChild("Top") then
+            local d = (HumanoidRootPart.Position - c.Top.Position).Magnitude
+            if d < bestD then best=c; bestD=d end
+        end
+    end
+    if not best then return false end
+    repeat
+        TP(best.Top.Position)
+        ReplicatedStorage.Network.Instancing_FireCustomFromClient
+            :FireServer("AdvancedDigsite","DigChest",best:GetAttribute("Coord"))
+        DigsTotal = DigsTotal + 1
+        task.wait()
+    until not best.Parent
+    return true
+end
+
+local function TeleportToRandomRow()
+    local active = GetActive()
+    if not (active and active:FindFirstChild("AdvancedDigsite")) then return end
+    local imp = active.AdvancedDigsite:FindFirstChild("Important")
+    local AB  = imp and imp:FindFirstChild("ActiveBlocks")
+    if not AB then return end
+
+    local tgt  = TargetPositions[math.random(1, #TargetPositions)]
+    local nums = string.split(tgt, ",")
+    local tx   = tonumber(nums[1])
+    local best = {}; local hy = -math.huge
+
+    for _, part in ipairs(AB:GetChildren()) do
+        if part:IsA("BasePart")
+            and part.BrickColor ~= BrickColor.new("Really black")
+            and part.BrickColor ~= BrickColor.new("Royal purple") then
+            local coord = part:GetAttribute("Coord")
+            if coord then
+                local cn = string.split(tostring(coord), ",")
+                local cx, cy = tonumber(cn[1]), tonumber(cn[2])
+                if cx == tx then
+                    if cy > hy then best={part}; hy=cy
+                    elseif cy == hy then table.insert(best, part) end
+                end
+            end
+        end
+    end
+
+    if #best > 0 then
+        local sel = best[math.random(1, #best)]
+        sel.Name = "TargetBlock"
+        repeat
+            TP(sel.Position)
+            ReplicatedStorage.Network.Instancing_FireCustomFromClient
+                :FireServer("AdvancedDigsite","DigBlock",sel:GetAttribute("Coord"))
+            DigsTotal = DigsTotal + 1
+            task.wait()
+        until not AB:FindFirstChild("TargetBlock")
+    end
+end
+
+task.spawn(function()
+    while task.wait() do
+        if not RUNNING then continue end
+        if BucketAmount > 5 then
+            if not TeleportToPurple() then
+                if not TeleportToChest() then
+                    TeleportToRandomRow()
+                end
+            end
+        else
+            if not TeleportToChest() then
+                TeleportToRandomRow()
+            end
+        end
+    end
+end)
+
+-- ================================================
+-- SERVER HOP
+-- ================================================
+task.wait(math.random(300, 400))
+
+local function HasPurple()
+    local active = GetActive()
+    if not active then return false end
+    local ads = active:FindFirstChild("AdvancedDigsite")
+    if not ads then return false end
+    local imp = ads:FindFirstChild("Important")
+    local AB  = imp and imp:FindFirstChild("ActiveBlocks")
+    if not AB then return false end
+    for _, p in ipairs(AB:GetChildren()) do
+        if p:IsA("BasePart") and p.BrickColor == BrickColor.new("Royal purple") then
+            return true
+        end
+    end
+    return false
+end
+
+while HasPurple() do task.wait(1) end
+
+local PlaceID    = game.PlaceId
+local AllIDs     = {}
+local cursor     = ""
+local actualHour = os.date("!*t").hour
+
+pcall(function() AllIDs = HttpService:JSONDecode(readfile("NotSameServers.json")) end)
+if typeof(AllIDs) ~= "table" then
+    AllIDs = {actualHour}
+    writefile("NotSameServers.json", HttpService:JSONEncode(AllIDs))
+end
+
+local function TPReturner()
+    local url = "https://games.roblox.com/v1/games/"..PlaceID
+        .."/servers/Public?sortOrder=Asc&limit=100"
+    if cursor ~= "" then url = url.."&cursor="..cursor end
+    local ok, result = pcall(function() return HttpService:JSONDecode(game:HttpGet(url)) end)
+    if not ok then return end
+    if result.nextPageCursor then cursor = result.nextPageCursor end
+    for _, v in pairs(result.data) do
+        if v.playing < v.maxPlayers then
+            local id = tostring(v.id); local skip = false
+            for _, existing in pairs(AllIDs) do
+                if tonumber(actualHour) ~= tonumber(existing) then
+                    pcall(function() delfile("NotSameServers.json") end)
+                    AllIDs = {actualHour}; break
+                end
+                if id == tostring(existing) then skip=true; break end
+            end
+            if not skip then
+                table.insert(AllIDs, id)
+                pcall(function()
+                    writefile("NotSameServers.json", HttpService:JSONEncode(AllIDs))
+                end)
+                TeleportService:TeleportToPlaceInstance(PlaceID, id, LocalPlayer)
+                task.wait(4)
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    while task.wait() do
+        pcall(function()
+            TPReturner()
+            if cursor ~= "" then TPReturner() end
+        end)
+    end
+end)
