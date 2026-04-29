@@ -1,0 +1,86 @@
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- Find a working request function
+local request = (syn and syn.request)
+    or (http and http.request)
+    or http_request
+    or request
+
+if not request then
+    warn("[API] ❌ Your executor has no 'request' function. Script will not work.")
+    return
+end
+print("[API] ✅ request function found")
+
+-- Wait for LocalPlayer
+local player = Players.LocalPlayer
+if not player then
+    player = Players:GetPropertyChangedSignal("LocalPlayer"):Wait() and Players.LocalPlayer
+end
+print("[API] ✅ LocalPlayer:", player.Name)
+
+local API = "https://aa20e0ba-9d87-49cd-90b6-bbc8be591d9d-00-3ah7eo8d8lkix.kirk.replit.dev/api"
+local KEY = "mysecretkey"
+
+local function getDiamonds()
+    local ok, result = pcall(function()
+        local save = require(ReplicatedStorage:WaitForChild("Library"):WaitForChild("Client").Save).Get()
+        local currency = save.Inventory.Currency
+        for _, item in pairs(currency) do
+            if item.id == "Diamonds" then
+                return item._am or 0
+            end
+        end
+        return 0
+    end)
+    if not ok then
+        warn("[API] ❌ getDiamonds error:", result)
+        return 0
+    end
+    return result
+end
+
+local function sendData()
+    local diamonds = getDiamonds()
+
+    local data = {
+        Username = player.Name,
+        DiamondsValue = diamonds,
+        Server = game.JobId ~= "" and game.JobId or "studio-test",
+        VoidTicketsValue = 0,
+        HugeList = 0,
+        InstaplantValue = 0,
+        SeedbagValue = 0,
+        DiamondsSeedValue = 0
+    }
+
+    local ok, response = pcall(request, {
+        Url = API .. "/update",
+        Method = "POST",
+        Headers = {
+            ["Content-Type"] = "application/json",
+            ["Authorization"] = KEY
+        },
+        Body = HttpService:JSONEncode(data)
+    })
+
+    if not ok then
+        warn("[API] ❌ Request threw error:", response)
+        return
+    end
+
+    if response and response.StatusCode then
+        print(string.format("[API] → diamonds=%s | HTTP %s | body=%s",
+            tostring(diamonds), tostring(response.StatusCode), tostring(response.Body)))
+    else
+        print("[API] → diamonds=" .. tostring(diamonds) .. " | sent (no status returned)")
+    end
+end
+
+print("[API] Starting loop, sending every 10s...")
+while true do
+    sendData()
+    task.wait(10)
+end
