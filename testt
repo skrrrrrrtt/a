@@ -1,0 +1,139 @@
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+-- Handle different executor request functions
+local request = (syn and syn.request)
+    or (http and http.request)
+    or http_request
+    or request
+
+if not request then
+    warn("[API] ❌ Your executor has no 'request' function.")
+    return
+end
+
+local player = Players.LocalPlayer
+if not player then
+    Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+    player = Players.LocalPlayer
+end
+print("[API] ✅ LocalPlayer:", player.Name)
+
+local API = "https://aa20e0ba-9d87-49cd-90b6-bbc8be591d9d-00-3ah7eo8d8lkix.kirk.replit.dev/api"
+local KEY = "mysecretkey"
+
+-- Robust Save Retrieval
+local function getSave()
+    local ok, result = pcall(function()
+        -- Attempt to find the Library folder and Client/Save modules
+        local Library = ReplicatedStorage:WaitForChild("Library", 5)
+        if not Library then return nil end
+        
+        local Client = Library:WaitForChild("Client", 5)
+        if not Client then return nil end
+        
+        local SaveModule = Client:WaitForChild("Save", 5)
+        if not SaveModule then return nil end
+        
+        return require(SaveModule).Get()
+    end)
+    
+    if not ok or type(result) ~= "table" then 
+        warn("[API] ❌ Failed to require Save module.")
+        return nil 
+    end
+    return result
+end
+
+-- Sum a currency by id with fallback checks
+local function getCurrency(save, currencyId)
+    if not save or not save.Inventory or not save.Inventory.Currency then return 0 end
+    for _, item in pairs(save.Inventory.Currency) do
+        if item.id == currencyId then
+            return item._am or item.am or 0
+        end
+    end
+    return 0
+end
+
+-- Improved Pet Detection (Case-insensitive + Table Fallbacks)
+local function countPetsByPrefix(save, prefix)
+    if not save or not save.Inventory then return 0 end
+    
+    -- Games often switch between .Pet and .Pets
+    local petTable = save.Inventory.Pet or save.Inventory.Pets
+    if not petTable then return 0 end
+
+    local count = 0
+    local searchPrefix = prefix:lower()
+
+    for _, pet in pairs(petTable) do
+        local id = pet.id or pet.Id
+        if id and type(id) == "string" then
+            -- Check if the prefix exists anywhere in the ID (case-insensitive)
+            if string.find(id:lower(), searchPrefix) then
+                count = count + (pet._am or pet.am or 1)
+            end
+        end
+    end
+    return count
+end
+
+local function sendData()
+    local save = getSave()
+    if not save then
+        warn("[API] ❌ Could not read save data.")
+        return
+    end
+
+    -- Currency checks
+    local diamonds    = getCurrency(save, "Diamonds")
+    local voidTickets = getCurrency(save, "VoidTicket")
+    if voidTickets == 0 then voidTickets = getCurrency(save, "Void Ticket") end
+
+    -- Huge and Titanic detection
+    local huges    = countPetsByPrefix(save, "Huge")
+    local titanics = countPetsByPrefix(save, "Titanic")
+
+    local data = {
+        Username           = player.Name,
+        Server             = game.JobId ~= "" and game.JobId or "studio-test",
+        DiamondsValue      = diamonds,
+        VoidTicketsValue   = voidTickets,
+        HugeList           = huges,
+        TitanicList        = titanics,
+        InstaplantValue    = 0,
+        SeedbagValue       = 0,
+        DiamondsSeedValue  = 0,
+    }
+
+    local ok, response = pcall(request, {
+        Url = API .. "/update",
+        Method = "POST",
+        Headers = {
+            ["Content-Type"] = "application/json",
+            ["Authorization"] = KEY
+        },
+        Body = HttpService:JSONEncode(data)
+    })
+
+    if not ok then
+        warn("[API] ❌ Request error:", response)
+        return
+    end
+
+    local code = response and response.StatusCode or "?"
+    print(string.format("[API] Sent | Gems: %d | Void: %d | Huges: %d | Titanics: %d | Status: %s",
+        diamonds, voidTickets, huges, titanics, tostring(code)))
+end
+
+-- Start Loop
+print("[API] Starting monitor loop (10s interval)...")
+while true do
+    local ok, err = pcall(sendData)
+    if not ok then
+        warn("[API] Loop Error:", err)
+    end
+    task.wait(10)
+end
