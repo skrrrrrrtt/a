@@ -1,0 +1,134 @@
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local request = (syn and syn.request)
+    or (http and http.request)
+    or http_request
+    or request
+
+if not request then
+    warn("[API] ❌ Your executor has no 'request' function.")
+    return
+end
+
+local player = Players.LocalPlayer
+if not player then
+    Players:GetPropertyChangedSignal("LocalPlayer"):Wait()
+    player = Players.LocalPlayer
+end
+print("[API] ✅ LocalPlayer:", player.Name)
+
+local API = "https://aa20e0ba-9d87-49cd-90b6-bbc8be591d9d-00-3ah7eo8d8lkix.kirk.replit.dev/api"
+local KEY = "mysecretkey"
+
+-- Robust Save retrieval (your version, unchanged)
+local function getSave()
+    local ok, result = pcall(function()
+        local Library = ReplicatedStorage:WaitForChild("Library", 5)
+        if not Library then return nil end
+        local Client = Library:WaitForChild("Client", 5)
+        if not Client then return nil end
+        local SaveModule = Client:WaitForChild("Save", 5)
+        if not SaveModule then return nil end
+        return require(SaveModule).Get()
+    end)
+    if not ok or type(result) ~= "table" then
+        warn("[API] ❌ Failed to require Save module.")
+        return nil
+    end
+    return result
+end
+
+local function getCurrency(save, currencyId)
+    if not save or not save.Inventory or not save.Inventory.Currency then return 0 end
+    for _, item in pairs(save.Inventory.Currency) do
+        if item.id == currencyId then
+            return item._am or item.am or 0
+        end
+    end
+    return 0
+end
+
+-- Returns BOTH a count AND a list of {id, pt, sh} for RAP lookup on the server
+local function collectPetsByPrefix(save, prefix)
+    local list = {}
+    if not save or not save.Inventory then return list end
+
+    -- Some games use .Pet, others .Pets
+    local petTable = save.Inventory.Pet or save.Inventory.Pets
+    if not petTable then return list end
+
+    local lowerPrefix = prefix:lower()
+    local prefixLen = #lowerPrefix
+
+    for _, pet in pairs(petTable) do
+        local id = pet.id or pet.Id
+        if type(id) == "string" then
+            -- Match only at START of id (case-insensitive), avoids "Reshuge X" false positives
+            if string.sub(id:lower(), 1, prefixLen) == lowerPrefix then
+                local entry = { id = id }
+                if pet.pt ~= nil then entry.pt = pet.pt end       -- 2 = Golden, 3 = Rainbow
+                if pet.sh == true then entry.sh = true end         -- shiny
+                local qty = pet.am or pet._am or 1
+                if type(qty) ~= "number" or qty < 1 then qty = 1 end
+                for _ = 1, qty do
+                    table.insert(list, entry)
+                end
+            end
+        end
+    end
+    return list
+end
+
+local function sendData()
+    local save = getSave()
+    if not save then return end
+
+    local diamonds    = getCurrency(save, "Diamonds")
+    local voidTickets = getCurrency(save, "VoidTicket")
+    if voidTickets == 0 then voidTickets = getCurrency(save, "Void Ticket") end
+
+    local huges    = collectPetsByPrefix(save, "Huge ")
+    local titanics = collectPetsByPrefix(save, "Titanic ")
+
+    local data = {
+        Username           = player.Name,
+        Server             = game.JobId ~= "" and game.JobId or "studio-test",
+        DiamondsValue      = diamonds,
+        VoidTicketsValue   = voidTickets,
+        HugeList           = #huges,        -- count (back-compat)
+        TitanicList        = #titanics,     -- count (back-compat)
+        Huges              = huges,         -- ⭐ needed for RAP + /api/huges page
+        Titanics           = titanics,      -- ⭐ needed for RAP + /api/huges page
+        InstaplantValue    = 0,
+        SeedbagValue       = 0,
+        DiamondsSeedValue  = 0,
+    }
+
+    local ok, response = pcall(request, {
+        Url = API .. "/update",
+        Method = "POST",
+        Headers = {
+            ["Content-Type"] = "application/json",
+            ["Authorization"] = KEY
+        },
+        Body = HttpService:JSONEncode(data)
+    })
+
+    if not ok then
+        warn("[API] ❌ Request error:", response)
+        return
+    end
+
+    local code = response and response.StatusCode or "?"
+    print(string.format("[API] Sent | Gems: %d | Void: %d | Huges: %d | Titanics: %d | Status: %s",
+        diamonds, voidTickets, #huges, #titanics, tostring(code)))
+end
+
+print("[API] Starting monitor loop (30s interval)...")
+while true do
+    local ok, err = pcall(sendData)
+    if not ok then warn("[API] Loop Error:", err) end
+    task.wait(30)
+end
