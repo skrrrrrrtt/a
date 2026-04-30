@@ -1,0 +1,351 @@
+repeat task.wait() until game:IsLoaded()
+
+pcall(function()
+    for _, v in pairs(game:GetService("CoreGui"):GetChildren()) do
+        if v.Name == "FPS_UI" then v:Destroy() end
+    end
+end)
+task.wait(5)
+
+local CoreGui = game:GetService("CoreGui")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+-- ============================================
+-- WEBHOOK CONFIG (replace with your URL)
+-- ============================================
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1414550206531244133/CRQ7-hTnGaBnu-v-yAGxOQYg07hdOZ2d93xfv6-PBTsSU5g3iqoV7_mkZSzoYKdBn1F1"
+local WEBHOOK_INTERVAL = 3600 -- 1 hour in seconds
+
+-- ============================================
+-- INVENTORY TRACKING
+-- ============================================
+local BucketAmount = 0
+local MagicBucketAmount = 0
+
+local function GetItemInfo(ItemsClass, ItemsName)
+    local Table = {}
+    local success, Inventory = pcall(function()
+        return require(ReplicatedStorage:WaitForChild("Library"):WaitForChild("Client").Save).Get().Inventory
+    end)
+    if not success or not Inventory or not Inventory[ItemsClass] then return Table end
+    for UID, Item in pairs(Inventory[ItemsClass]) do
+        if table.find(ItemsName, Item.id) then
+            table.insert(Table, { uid = UID, data = Item })
+        end
+    end
+    return Table
+end
+
+local function UpdateInventory()
+    while true do
+        pcall(function()
+            local buckets = GetItemInfo("Misc", {"Bucket"})
+            BucketAmount = 0
+            for _, info in pairs(buckets) do
+                if info.data._am then
+                    BucketAmount = BucketAmount + info.data._am
+                end
+            end
+
+            local magicBuckets = GetItemInfo("Misc", {"Bucket O' Magic"})
+            MagicBucketAmount = 0
+            for _, info in pairs(magicBuckets) do
+                if info.data._am then
+                    MagicBucketAmount = MagicBucketAmount + info.data._am
+                end
+            end
+        end)
+        wait(2)
+    end
+end
+
+task.spawn(UpdateInventory)
+
+-- ============================================
+-- RAP LOOKUP
+-- ============================================
+local function GetRAP()
+    local bucketRap = 0
+    local magicBucketRap = 0
+
+    pcall(function()
+        local response = game:HttpGet("https://ps99.biggamesapi.io/api/rap")
+        local data = HttpService:JSONDecode(response)
+        if data and data.status == "ok" and data.data then
+            for _, item in ipairs(data.data) do
+                if item.category == "Misc" then
+                    if item.configData and item.configData.id == "Bucket O' Magic" then
+                        magicBucketRap = item.value or 0
+                    end
+                end
+            end
+        end
+    end)
+
+    return magicBucketRap
+end
+
+-- ============================================
+-- DISCORD WEBHOOK
+-- ============================================
+local function SendWebhook(elapsed)
+    local h = math.floor(elapsed / 3600)
+    local m = math.floor((elapsed % 3600) / 60)
+    local s = elapsed % 60
+    local uptimeStr = string.format("%02d:%02d:%02d", h, m, s)
+
+    local magicBucketRap = GetRAP()
+    local totalMagicRap = magicBucketRap * MagicBucketAmount
+
+    local function formatNumber(n)
+        if n >= 1e9 then
+            return string.format("%.2fB", n / 1e9)
+        elseif n >= 1e6 then
+            return string.format("%.2fM", n / 1e6)
+        elseif n >= 1e3 then
+            return string.format("%.2fK", n / 1e3)
+        end
+        return tostring(n)
+    end
+
+    local data = {
+        ["embeds"] = {{
+            ["title"] = "📊 Inventory Report",
+            ["color"] = 16776960,
+            ["fields"] = {
+                {
+                    ["name"] = "🪣 Bucket",
+                    ["value"] = tostring(BucketAmount),
+                    ["inline"] = true
+                },
+                {
+                    ["name"] = "✨ Bucket O' Magic",
+                    ["value"] = tostring(MagicBucketAmount),
+                    ["inline"] = true
+                },
+                {
+                    ["name"] = "💎 Magic Bucket RAP",
+                    ["value"] = formatNumber(magicBucketRap) .. " each\n" .. formatNumber(totalMagicRap) .. " total",
+                    ["inline"] = true
+                },
+                {
+                    ["name"] = "⏱️ Uptime",
+                    ["value"] = uptimeStr,
+                    ["inline"] = false
+                },
+                {
+                    ["name"] = "👤 Player",
+                    ["value"] = LocalPlayer.Name .. " (" .. LocalPlayer.DisplayName .. ")",
+                    ["inline"] = false
+                }
+            },
+            ["footer"] = {
+                ["text"] = "RAP data from ps99.biggamesapi.io"
+            },
+            ["timestamp"] = os.date("!%Y-%m-%dT%H:%M:%SZ")
+        }}
+    }
+
+    pcall(function()
+        local jsonBody = HttpService:JSONEncode(data)
+        local headers = {["Content-Type"] = "application/json"}
+
+        if syn and syn.request then
+            syn.request({ Url = WEBHOOK_URL, Method = "POST", Headers = headers, Body = jsonBody })
+        elseif http and http.request then
+            http.request({ Url = WEBHOOK_URL, Method = "POST", Headers = headers, Body = jsonBody })
+        elseif request then
+            request({ Url = WEBHOOK_URL, Method = "POST", Headers = headers, Body = jsonBody })
+        elseif http_request then
+            http_request({ Url = WEBHOOK_URL, Method = "POST", Headers = headers, Body = jsonBody })
+        end
+    end)
+end
+
+-- ============================================
+-- GUI
+-- ============================================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "FPS_UI"
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = CoreGui
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+ScreenGui.DisplayOrder = 999999999
+
+local UIScale = Instance.new("UIScale", ScreenGui)
+local function updateScale()
+    local cam = workspace.CurrentCamera
+    if cam then
+        UIScale.Scale = (cam.ViewportSize.Y / 1080) * 1.6
+    end
+end
+updateScale()
+workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
+
+-- BLACK BACKGROUND
+local bg = Instance.new("Frame")
+bg.AnchorPoint = Vector2.new(0.5, 0.5)
+bg.Position = UDim2.fromScale(0.5, 0.5)
+bg.Size = UDim2.fromScale(2, 2)
+bg.BackgroundColor3 = Color3.new(0, 0, 0)
+bg.BorderSizePixel = 0
+bg.ZIndex = 1
+bg.Parent = ScreenGui
+
+-- TIMER LABEL
+local Online = Instance.new("TextLabel")
+Online.Size = UDim2.new(0, 1200, 0, 120)
+Online.Position = UDim2.new(0.5, -600, 0.5, -160)
+Online.BackgroundTransparency = 1
+Online.TextColor3 = Color3.fromRGB(255, 255, 0)
+Online.Font = Enum.Font.Code
+Online.TextSize = 120
+Online.Text = "00:00:00"
+Online.TextXAlignment = Enum.TextXAlignment.Center
+Online.TextStrokeTransparency = 0.3
+Online.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+Online.ZIndex = 2
+Online.Parent = ScreenGui
+
+-- BUCKET LABEL
+local BucketLabel = Instance.new("TextLabel")
+BucketLabel.Size = UDim2.new(0, 1200, 0, 60)
+BucketLabel.Position = UDim2.new(0.5, -600, 0.5, -20)
+BucketLabel.BackgroundTransparency = 1
+BucketLabel.TextColor3 = Color3.fromRGB(100, 200, 255)
+BucketLabel.Font = Enum.Font.Code
+BucketLabel.TextSize = 50
+BucketLabel.Text = "Bucket: 0"
+BucketLabel.TextXAlignment = Enum.TextXAlignment.Center
+BucketLabel.TextStrokeTransparency = 0.3
+BucketLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+BucketLabel.ZIndex = 2
+BucketLabel.Parent = ScreenGui
+
+-- MAGIC BUCKET LABEL
+local MagicBucketLabel = Instance.new("TextLabel")
+MagicBucketLabel.Size = UDim2.new(0, 1200, 0, 60)
+MagicBucketLabel.Position = UDim2.new(0.5, -600, 0.5, 50)
+MagicBucketLabel.BackgroundTransparency = 1
+MagicBucketLabel.TextColor3 = Color3.fromRGB(200, 100, 255)
+MagicBucketLabel.Font = Enum.Font.Code
+MagicBucketLabel.TextSize = 50
+MagicBucketLabel.Text = "Magic Bucket: 0"
+MagicBucketLabel.TextXAlignment = Enum.TextXAlignment.Center
+MagicBucketLabel.TextStrokeTransparency = 0.3
+MagicBucketLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+MagicBucketLabel.ZIndex = 2
+MagicBucketLabel.Parent = ScreenGui
+
+-- RAP LABEL
+local RapLabel = Instance.new("TextLabel")
+RapLabel.Size = UDim2.new(0, 1200, 0, 60)
+RapLabel.Position = UDim2.new(0.5, -600, 0.5, 120)
+RapLabel.BackgroundTransparency = 1
+RapLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+RapLabel.Font = Enum.Font.Code
+RapLabel.TextSize = 40
+RapLabel.Text = "RAP: Loading..."
+RapLabel.TextXAlignment = Enum.TextXAlignment.Center
+RapLabel.TextStrokeTransparency = 0.3
+RapLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+RapLabel.ZIndex = 2
+RapLabel.Parent = ScreenGui
+
+-- CLOSE BUTTON
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.fromOffset(150, 40)
+closeBtn.Position = UDim2.new(0.5, -75, 1, -60)
+closeBtn.AnchorPoint = Vector2.new(0, 0)
+closeBtn.Text = "CLOSE"
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 18
+closeBtn.BackgroundColor3 = Color3.fromRGB(220, 20, 60)
+closeBtn.TextColor3 = Color3.new(1, 1, 1)
+closeBtn.ZIndex = 10
+closeBtn.Parent = ScreenGui
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
+
+-- OPEN BUTTON
+local openBtn = Instance.new("TextButton")
+openBtn.Size = UDim2.fromOffset(150, 40)
+openBtn.Position = UDim2.new(0.5, -75, 1, -60)
+openBtn.AnchorPoint = Vector2.new(0, 0)
+openBtn.Text = "OPEN TIMER"
+openBtn.Font = Enum.Font.GothamBold
+openBtn.TextSize = 18
+openBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+openBtn.TextColor3 = Color3.new(1, 1, 1)
+openBtn.Visible = false
+openBtn.ZIndex = 10
+openBtn.Parent = ScreenGui
+Instance.new("UICorner", openBtn).CornerRadius = UDim.new(0, 8)
+
+-- TOGGLE LOGIC
+local function setVisible(v)
+    bg.Visible = v
+    Online.Visible = v
+    BucketLabel.Visible = v
+    MagicBucketLabel.Visible = v
+    RapLabel.Visible = v
+    closeBtn.Visible = v
+    openBtn.Visible = not v
+end
+
+closeBtn.MouseButton1Click:Connect(function()
+    setVisible(false)
+end)
+
+openBtn.MouseButton1Click:Connect(function()
+    setVisible(true)
+end)
+
+-- ============================================
+-- MAIN LOOPS
+-- ============================================
+local startTime = os.time()
+local cachedRap = 0
+
+-- RAP updater (every 5 min to avoid rate limiting)
+task.spawn(function()
+    while true do
+        cachedRap = GetRAP()
+        wait(300)
+    end
+end)
+
+-- Timer + GUI update loop
+task.spawn(function()
+    while task.wait(1) do
+        local elapsed = os.time() - startTime
+        local h = math.floor(elapsed / 3600)
+        local m = math.floor((elapsed % 3600) / 60)
+        local s = elapsed % 60
+        Online.Text = string.format("%02d:%02d:%02d", h, m, s)
+        BucketLabel.Text = "Bucket: " .. tostring(BucketAmount)
+        MagicBucketLabel.Text = "Magic Bucket: " .. tostring(MagicBucketAmount)
+
+        local totalRap = cachedRap * MagicBucketAmount
+        if totalRap >= 1e6 then
+            RapLabel.Text = string.format("RAP: %s ea | Total: %.2fM", tostring(cachedRap), totalRap / 1e6)
+        elseif totalRap >= 1e3 then
+            RapLabel.Text = string.format("RAP: %s ea | Total: %.2fK", tostring(cachedRap), totalRap / 1e3)
+        else
+            RapLabel.Text = string.format("RAP: %s ea | Total: %s", tostring(cachedRap), tostring(totalRap))
+        end
+    end
+end)
+
+-- Webhook loop (send immediately first, then every 1 hour)
+task.spawn(function()
+    wait(10) -- small delay to let inventory load
+    while true do
+        local elapsed = os.time() - startTime
+        pcall(SendWebhook, elapsed)
+        wait(WEBHOOK_INTERVAL)
+    end
+end)
