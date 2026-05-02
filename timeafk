@@ -1,0 +1,120 @@
+repeat task.wait() until game:IsLoaded()
+
+local LocalPlayer = game:GetService("Players").LocalPlayer
+repeat task.wait() until not LocalPlayer.PlayerGui:FindFirstChild("__INTRO")
+
+-- ANTI AFK
+pcall(function()
+    local Network = require(game.ReplicatedStorage.Library.Client.Network)
+    LocalPlayer.PlayerScripts.Scripts.Core["Idle Tracking"].Enabled = false
+    LocalPlayer.PlayerScripts.Scripts.Core["Server Closing"].Enabled = false
+    Network.Fire("Idle Tracking: Stop Timer")
+    for _, conn in ipairs(getconnections(LocalPlayer.Idled)) do
+        conn:Disable()
+    end
+end)
+
+-- CLEANUP OLD UI
+pcall(function()
+    for _, v in pairs(game:GetService("CoreGui"):GetChildren()) do
+        if v.Name == "FPS_UI" then v:Destroy() end
+    end
+end)
+
+task.wait(5)
+
+local CoreGui = game:GetService("CoreGui")
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "FPS_UI"
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = CoreGui
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+ScreenGui.DisplayOrder = 999999999
+
+local UIScale = Instance.new("UIScale", ScreenGui)
+local function updateScale()
+    local cam = workspace.CurrentCamera
+    if cam then
+        UIScale.Scale = (cam.ViewportSize.Y / 1080) * 1.6
+    end
+end
+updateScale()
+workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
+
+-- BLACK BACKGROUND
+local bg = Instance.new("Frame")
+bg.AnchorPoint = Vector2.new(0.5, 0.5)
+bg.Position = UDim2.fromScale(0.5, 0.5)
+bg.Size = UDim2.fromScale(2, 2)
+bg.BackgroundColor3 = Color3.new(0, 0, 0)
+bg.BorderSizePixel = 0
+bg.ZIndex = 1
+bg.Parent = ScreenGui
+
+local Online = Instance.new("TextLabel")
+Online.Size = UDim2.new(0, 1200, 0, 120)
+Online.Position = UDim2.new(0.5, -600, 0.5, -60)
+Online.BackgroundTransparency = 1
+Online.TextColor3 = Color3.fromRGB(255, 255, 0)
+Online.Font = Enum.Font.Code
+Online.TextSize = 120
+Online.Text = "00:00:00"
+Online.TextXAlignment = Enum.TextXAlignment.Center
+Online.TextStrokeTransparency = 0.3
+Online.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+Online.ZIndex = 2
+Online.Parent = ScreenGui
+
+-- CLOSE BUTTON
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.fromOffset(150, 40)
+closeBtn.Position = UDim2.new(0.5, -75, 1, -60)
+closeBtn.AnchorPoint = Vector2.new(0, 0)
+closeBtn.Text = "CLOSE"
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 18
+closeBtn.BackgroundColor3 = Color3.fromRGB(220, 20, 60)
+closeBtn.TextColor3 = Color3.new(1, 1, 1)
+closeBtn.ZIndex = 10
+closeBtn.Parent = ScreenGui
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
+
+-- OPEN BUTTON
+local openBtn = Instance.new("TextButton")
+openBtn.Size = UDim2.fromOffset(150, 40)
+openBtn.Position = UDim2.new(0.5, -75, 1, -60)
+openBtn.AnchorPoint = Vector2.new(0, 0)
+openBtn.Text = "OPEN TIMER"
+openBtn.Font = Enum.Font.GothamBold
+openBtn.TextSize = 18
+openBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+openBtn.TextColor3 = Color3.new(1, 1, 1)
+openBtn.Visible = false
+openBtn.ZIndex = 10
+openBtn.Parent = ScreenGui
+Instance.new("UICorner", openBtn).CornerRadius = UDim.new(0, 8)
+
+-- TOGGLE
+local function setVisible(v)
+    bg.Visible = v
+    Online.Visible = v
+    closeBtn.Visible = v
+    openBtn.Visible = not v
+end
+
+closeBtn.MouseButton1Click:Connect(function() setVisible(false) end)
+openBtn.MouseButton1Click:Connect(function() setVisible(true) end)
+
+-- TIMER
+local startTime = os.time()
+task.spawn(function()
+    while task.wait(1) do
+        local elapsed = os.time() - startTime
+        local h = math.floor(elapsed / 3600)
+        local m = math.floor((elapsed % 3600) / 60)
+        local s = elapsed % 60
+        Online.Text = string.format("%02d:%02d:%02d", h, m, s)
+    end
+end)
