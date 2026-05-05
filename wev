@@ -1,0 +1,115 @@
+--====================================================================
+--  Roblox PS99 Bot Reporter
+--  POSTs your bot's state to your dashboard every REPORT_INTERVAL seconds.
+--====================================================================
+
+local HttpService = game:GetService("HttpService")
+local Players     = game:GetService("Players")
+
+--------------------------------------------------------------------
+-- CONFIG — edit these
+--------------------------------------------------------------------
+local API_URL          = "https://aa20e0ba-9d87-49cd-90b6-bbc8be991d9d-00-3ah7eo8d8lkix.kirk.replit.dev/api/update"
+local AUTH_KEY         = "mysecretkey"
+local REPORT_INTERVAL  = 30   -- seconds between reports
+
+-- Items you want monitored on /api/watch.
+-- Names must match in-game item ids exactly (the same ids the BIG Games
+-- catalog uses — you can browse them at /api/items.json?q=...).
+local ITEMS_TO_TRACK = {
+    "Easter Egg",
+    "Lucky Block",
+    "Bucket O' Magic",
+    "Hot Cocoa",
+    "Diamond Chest",
+    "Rainbow Coin",
+    -- add as many as you want…
+}
+
+--------------------------------------------------------------------
+-- HELPERS — adapt these to your existing bot script
+--------------------------------------------------------------------
+local LP = Players.LocalPlayer
+
+-- Reuse whatever you already use in your bot to read inventory counts.
+-- Common PS99 sources: Replion player data, leaderstats, GUI counters.
+-- Below is a generic template; replace the body with your real lookup.
+local function countItem(itemName)
+    -- EXAMPLE 1: Replion (most accurate, used by PS99 internally)
+    --   local Replion = require(game.ReplicatedStorage.Packages.Replion)
+    --   local data = Replion.Client:WaitReplion("Data")
+    --   local inv = data:Get("Inventory") or {}
+    --   return tonumber(inv[itemName]) or 0
+    --
+    -- EXAMPLE 2: from your existing bot's inventory cache
+    --   return MyBot.Inventory[itemName] or 0
+    return 0
+end
+
+local function readNumber(name)
+    local stats = LP:FindFirstChild("leaderstats")
+    if not stats then return 0 end
+    local v = stats:FindFirstChild(name)
+    return v and tonumber(v.Value) or 0
+end
+
+-- Build the Items table the dashboard expects: { ["Easter Egg"] = 12, ... }
+local function buildItemsTable()
+    local items = {}
+    for _, name in ipairs(ITEMS_TO_TRACK) do
+        local n = countItem(name)
+        if n and n > 0 then
+            items[name] = n
+        end
+    end
+    return items
+end
+
+-- Replace these with your bot's existing pet collectors.
+-- Each entry is { id = "Huge Hot Cocoa Cow", pt = 2 (optional), sh = true (optional) }
+local function collectHuges()    return {} end
+local function collectTitanics() return {} end
+
+--------------------------------------------------------------------
+-- POST loop
+--------------------------------------------------------------------
+local function sendUpdate()
+    local payload = {
+        Username          = LP.Name,
+        Server            = game.JobId,
+        DiamondsValue     = readNumber("Diamonds"),
+        VoidTicketsValue  = readNumber("Void Tickets"),
+        InstaplantValue   = readNumber("Instaplant"),
+        SeedbagValue      = readNumber("Seedbag"),
+        DiamondsSeedValue = readNumber("Diamonds Seed"),
+        Huges             = collectHuges(),
+        Titanics          = collectTitanics(),
+        Items             = buildItemsTable(),
+    }
+
+    local body = HttpService:JSONEncode(payload)
+
+    -- request() works in most executors (Synapse, KRNL, etc.)
+    local ok, err = pcall(function()
+        local req = (syn and syn.request) or (http and http.request) or request
+        req({
+            Url     = API_URL,
+            Method  = "POST",
+            Headers = {
+                ["Content-Type"]  = "application/json",
+                ["Authorization"] = AUTH_KEY,
+            },
+            Body = body,
+        })
+    end)
+
+    if not ok then
+        warn("[BotReporter] POST failed:", err)
+    end
+end
+
+print("[BotReporter] Started, reporting to", API_URL, "every", REPORT_INTERVAL, "s")
+while true do
+    pcall(sendUpdate)
+    task.wait(REPORT_INTERVAL)
+end
