@@ -1,0 +1,898 @@
+-- Offline reward and auto rebirth helper with enemy teleport support
+getgenv().Config = getgenv().Config or {
+    ["Claim Rewards"] = true,
+    ["Auto Rebirth"] = true,
+    ["Auto Roll"] = true,
+    ["Roll Interval(S)"] = 0.4,
+    ["Teleport To Enemies"] = true,
+    ["Auto Buy Zones"] = true,
+    ["Auto Buy Upgrades"] = true,
+    ["Auto Equip Best"] = true,
+    ["Delete Unnecessary"] = true,
+    ["Tp Loot"] = 5,
+    ["Auto Use Boosts"] = true,
+}
+
+getgenv().UpgradeBlacklist = getgenv().UpgradeBlacklist or {}
+
+getgenv().OfflineRewardsClaimed = getgenv().OfflineRewardsClaimed or false
+getgenv().AutoRebirthStarted = getgenv().AutoRebirthStarted or false
+getgenv().AutoRollStarted = getgenv().AutoRollStarted or false
+getgenv().LastMaxZone = getgenv().LastMaxZone or 0
+getgenv().AutoUpgradeStarted = getgenv().AutoUpgradeStarted or false
+getgenv().LastZoneTeleport = getgenv().LastZoneTeleport or 0
+getgenv().AutoBoostStarted = getgenv().AutoBoostStarted or false
+
+local players = game:GetService("Players")
+local player = players.LocalPlayer
+local httpService = game:GetService("HttpService")
+local workspace = game:GetService("Workspace")
+local replicatedStorage = game:GetService("ReplicatedStorage")
+local uis = game:GetService("UserInputService")
+
+local originalWarn = warn
+warn = function(...)
+    local msg = tostring((...))
+    if msg:find("zoneEntered") or msg:find("does not exist on networkTag") or msg:find("NetworkerClient") then return end
+    originalWarn(...)
+end
+
+local function getOwnedFilePath()
+    local username = player.Name
+    local safeName = username:gsub("[^%w_%-]", "_")
+    return "SlimeRNG_" .. safeName .. "_upgrades.json"
+end
+
+local OWNED_FILE = getOwnedFilePath()
+local ownedUpgrades = {}
+local ownedUpgradesLookup = {}
+
+local function loadOwnedUpgrades()
+    local success, data = pcall(function() return readfile(OWNED_FILE) end)
+    if success and data and data ~= "" then
+        local success2, decoded = pcall(function() return httpService:JSONDecode(data) end)
+        if success2 and type(decoded) == "table" then
+            ownedUpgrades = decoded
+            ownedUpgradesLookup = {}
+            for _, id in ipairs(ownedUpgrades) do ownedUpgradesLookup[id] = true end
+            print("[Cache] Loaded", #ownedUpgrades, "upgrades")
+            return true
+        end
+    end
+    ownedUpgrades = {}
+    ownedUpgradesLookup = {}
+    return false
+end
+
+local function saveOwnedUpgrade(id)
+    if ownedUpgradesLookup[id] then return end
+    table.insert(ownedUpgrades, id)
+    ownedUpgradesLookup[id] = true
+    pcall(function() writefile(OWNED_FILE, httpService:JSONEncode(ownedUpgrades)) end)
+end
+
+local function isUpgradeOwned(id) return ownedUpgradesLookup[id] == true end
+
+local function isUpgradeBlacklisted(upgradeId)
+    for _, blacklisted in ipairs(getgenv().UpgradeBlacklist) do
+        if upgradeId == blacklisted then return true end
+    end
+    return false
+end
+
+local function getCurrentMaxZone()
+    local success, zonesService = pcall(function()
+        return require(replicatedStorage.Source.Features.Zones.ZonesServiceClient)
+    end)
+    if not success then return 1 end
+    pcall(function() zonesService.init({}) end)
+    local success2, result = pcall(function() return zonesService.getMaxZone() end)
+    return (success2 and result) or 1
+end
+
+local function getCurrentCoins()
+    local ls = player:FindFirstChild("leaderstats")
+    if ls then
+        local coins = ls:FindFirstChild("Coins") or ls:FindFirstChild("coins") or ls:FindFirstChild("Money")
+        if coins then return coins.Value end
+    end
+    local success, ds = pcall(function() return require(replicatedStorage.Packages.DataService).client end)
+    if success and ds then
+        local success2, coins = pcall(function() return ds:get("coins") end)
+        if success2 and coins then return coins end
+    end
+    return 0
+end
+
+local function getCurrentGoop()
+    local success, ds = pcall(function() return require(replicatedStorage.Packages.DataService).client end)
+    if success and ds then
+        local success2, goop = pcall(function() return ds:get("goop") end)
+        if success2 and goop then return goop end
+    end
+    return 0
+end
+
+local function getRebirthCount()
+    local success, ds = pcall(function() return require(replicatedStorage.Packages.DataService).client end)
+    if success and ds then
+        local success2, rebirths = pcall(function() return ds:get("rebirths") end)
+        if success2 and rebirths then return rebirths end
+    end
+    return 0
+end
+
+local function getRebirthCost()
+    local success, utils = pcall(function() return require(replicatedStorage.Source.Features.Rebirth.RebirthServiceUtils) end)
+    if success then
+        local success2, cost = pcall(function() return utils.getCost(getRebirthCount()) end)
+        if success2 and cost then return cost end
+    end
+    return 999999999
+end
+
+local function canAffordRebirth() return getCurrentGoop() >= getRebirthCost() end
+
+local function getZonePrice(zoneId)
+    local success, zones = pcall(function() return require(replicatedStorage.Source.Game.Items.Zones) end)
+    if not success then return nil end
+    local success2, result = pcall(function()
+        if zones.hasZone(zoneId) then return zones.getZone(zoneId).price end
+        return nil
+    end)
+    return success2 and result or nil
+end
+
+local boostTypes = {"luck", "ultraLuck", "currency", "rollSpeed"}
+local boostService = nil
+
+local function getBoostService()
+    if not boostService then
+        local success, service = pcall(function()
+            return require(replicatedStorage.Source.Features.Boosts.BoostServiceClient)
+        end)
+        if success then
+            pcall(function() service.init({}) end)
+            boostService = service
+        end
+    end
+    return boostService
+end
+
+local function isBoostActive(boostType)
+    local service = getBoostService()
+    if not service then return false end
+    local success, active = pcall(function() return service.isActive(service, boostType) end)
+    return success and active or false
+end
+
+local function useBoostIfNeeded(boostType)
+    if isBoostActive(boostType) then return false end
+    local remote = replicatedStorage.Packages._Index["leifstout_networker@0.3.1"].networker._remotes.BoostService.RemoteFunction
+    local success, result = pcall(function() return remote:InvokeServer("requestUseBoost", boostType) end)
+    if success then print("[Boost] ✓ Activated:", boostType); return true end
+    return false
+end
+
+local upgradesWithCost = {
+    {"rollSpeed1", 25}, {"rollSpeed2", 100}, {"rollSpeed3", 1000},
+    {"rollSpeed4", 3000}, {"rollSpeed5", 9000}, {"rollSpeed6", 27000},
+    {"enemyCount2", 100}, {"enemyCount3", 3000}, {"enemyCount4", 100000},
+    {"enemyCount5", 5000000}, {"enemyCount6", 400000000}, {"enemyCount7", 50000000000},
+    {"backpack", 100}, {"slots2", 750}, {"slots3", 5000}, {"slots4", 250000},
+    {"slots5", 10000000}, {"slots6", 600000000}, {"autoRoll", 200},
+    {"cloverRolls1", 125}, {"cloverRolls2", 1500}, {"cloverRolls3", 10000},
+    {"cloverRolls4", 70000}, {"cloverRolls5", 210000}, {"bonusRolls1", 300},
+    {"bonusRolls2", 5000}, {"bonusRolls3", 10000}, {"extraRollChance1", 6000},
+    {"extraRollChance2", 15000}, {"extraRollChance3", 35000}, {"goldenRolls", 1000},
+    {"goldenRolls2", 50000}, {"goldenRolls3", 2000000}, {"goldenRolls4", 100000000},
+    {"diamondRolls", 20000000}, {"diamondRolls2", 250000000}, {"diamondRolls3", 5000000000},
+    {"diamondRolls4", 50000000000}, {"voidRolls", 15000000000}, {"voidRolls2", 150000000000},
+    {"voidRolls3", 3000000000000}, {"voidRolls4", 30000000000000}, {"luck1", 1500},
+    {"luck2", 10000}, {"luck3", 100000}, {"luck4", 1000000}, {"luck5", 5000000},
+    {"luck6", 25000000}, {"luck7", 125000000}, {"luck8", 625000000}, {"luck9", 3100000000},
+    {"luck10", 20000000000}, {"luck11", 140000000000}, {"luck12", 1000000000000},
+    {"luck13", 8000000000000}, {"luck14", 64000000000000}, {"luck15", 512000000000000},
+    {"friendLuck1", 350000}, {"friendLuck2", 900000}, {"friendLuck3", 2000000},
+    {"friendLuck4", 1000000000}, {"friendLuck5", 1000000000000}, {"friendLuck6", 1000000000000000},
+    {"friendLuckBoost1", 7500000}, {"friendLuckBoost2", 7500000000}, {"friendLuckBoost3", 7500000000000},
+    {"friendLuckBoost4", 7500000000000000}, {"coinIncome1", 100000}, {"coinIncome2", 1000000},
+    {"coinIncome3", 10000000}, {"coinIncome4", 100000000}, {"coinIncome5", 1000000000},
+    {"coinIncome6", 10000000000}, {"coinIncome7", 100000000000}, {"coinIncome8", 1000000000000},
+    {"coinIncome9", 10000000000000}, {"coinIncome10", 100000000000000}, {"coinIncome11", 1000000000000000},
+    {"coinIncome12", 10000000000000000}, {"coinIncome13", 100000000000000000}, {"overkill1", 2000000},
+    {"overkill2", 15000000}, {"overkill3", 60000000}, {"overkill4", 850000000}, {"overkill5", 20000000000},
+    {"overkill6", 400000000000}, {"enemySpawnSpeed1", 15000000}, {"enemySpawnSpeed2", 250000000},
+    {"enemySpawnSpeed3", 5000000000}, {"bigEnemies", 750000}, {"bigEnemyChance1", 750000000000},
+    {"shinyEnemies", 30000000}, {"shinyEnemyChance1", 30000000000000}, {"hugeEnemies", 1000000000},
+    {"hugeEnemyChance1", 1000000000000000}, {"invertedEnemies", 10000000000}, {"invertedEnemyChance1", 10000000000000000},
+    {"goop", 10000000}, {"goopDropRate1", 250000000}, {"goopDropRate2", 20000000000},
+    {"goopDropRate3", 4000000000000}, {"goopDropRate4", 500000000000000}, {"goopDropRate5", 75000000000000000},
+    {"goopDropRate6", 10000000000000000000}, {"slimeTargetRange1", 30000000}, {"slimeTargetRange2", 450000000},
+    {"slimeTargetRange3", 8000000000}, {"walkSpeed1", 30000}, {"walkSpeed2", 225000}, {"walkSpeed3", 2000000},
+    {"magnet1", 500000}, {"magnet2", 500000000}, {"magnet3", 500000000000}, {"teleporter", 1000000},
+    {"bigSlimes", 75000}, {"hugeSlimes", 100000000}, {"shinySlimes", 3000000}, {"invertedSlimes", 1000000000},
+    {"lootApple", 2000}, {"lootCarrot", 10000}, {"lootCherries", 50000}, {"lootGrapes", 500000},
+    {"lootBanana", 5000000}, {"lootWatermelon", 75000000}, {"lootPizza", 1000000000}, {"lootChicken", 20000000000},
+    {"lootDrumstick", 500000000000}, {"lootLuck", 4000}, {"lootCurrency", 25000}, {"lootRollSpeed", 100000},
+    {"lootUltraLuck", 1000000}, {"offlineLootAmount1", 1500000}, {"offlineLootAmount2", 1000000000},
+    {"offlineLootAmount3", 1000000000000}, {"offlineLootAmount4", 1000000000000000},
+    {"offlineLootAmount5", 1000000000000000000}, {"lootTree", 0}, {"playerTree", 0},
+}
+
+table.sort(upgradesWithCost, function(a, b) return a[2] < b[2] end)
+
+local function tryBuyUpgrade(id, coins)
+    if isUpgradeBlacklisted(id) then return false end
+    if isUpgradeOwned(id) then return false end
+    local cost = 0
+    for _, item in ipairs(upgradesWithCost) do
+        if item[1] == id then cost = item[2]; break end
+    end
+    if coins < cost then return false end
+    local remote = replicatedStorage.Packages._Index["leifstout_networker@0.3.1"].networker._remotes.UpgradeService.RemoteFunction
+    local success, result = pcall(function() return remote:InvokeServer("requestUnlock", id) end)
+    if success and result == true then saveOwnedUpgrade(id); return true end
+    return false
+end
+
+local function claimReward(t)
+    local event = replicatedStorage.Packages._Index["leifstout_networker@0.3.1"].networker._remotes.IndexService.RemoteFunction
+    pcall(function() event:InvokeServer("requestClaimReward", t) end)
+end
+
+local function equipBestItems()
+    local event = replicatedStorage.Packages._Index["leifstout_networker@0.3.1"].networker._remotes.InventoryService.RemoteFunction
+    pcall(function() event:InvokeServer("requestEquipBest") end)
+end
+
+local function teleportToZone(zoneNumber)
+    local event = replicatedStorage.Packages._Index["leifstout_networker@0.3.1"].networker._remotes.ZonesService.RemoteFunction
+    local success, err = pcall(function() return event:InvokeServer("requestTeleportZone", zoneNumber) end)
+    if success then print("[Teleport] ✓ Teleported to zone", zoneNumber); return true end
+    return false
+end
+
+local function getGameplayFolder()
+    local networker = replicatedStorage.Packages._Index["leifstout_networker@0.3.1"].networker
+    if not networker then return nil end
+    local remotes = networker._remotes
+    if not remotes then return nil end
+    for _, child in ipairs(remotes:GetChildren()) do
+        if child.Name:match("^Gameplay%d+$") then
+            local workspaceFolder = workspace:FindFirstChild(child.Name)
+            if workspaceFolder then return workspaceFolder, child.Name end
+        end
+    end
+    return nil
+end
+
+local function findFirstEnemyRootPart(enemiesFolder)
+    for _, enemy in pairs(enemiesFolder:GetChildren()) do
+        if enemy:IsA("Model") then
+            local enemyRoot = enemy.PrimaryPart
+                or enemy:FindFirstChild("HumanoidRootPart")
+                or enemy:FindFirstChild("RootPart")
+                or enemy:FindFirstChild("SlimeBody")
+                or enemy:FindFirstChild("Torso")
+                or enemy:FindFirstChild("UpperTorso")
+            if not enemyRoot then
+                for _, descendant in ipairs(enemy:GetDescendants()) do
+                    if descendant:IsA("BasePart") then enemyRoot = descendant; break end
+                end
+            end
+            if enemyRoot then return enemyRoot end
+        elseif enemy:IsA("BasePart") then
+            return enemy
+        end
+    end
+    return nil
+end
+
+local function teleportToEnemy()
+    if not getgenv().Config["Teleport To Enemies"] then return end
+    local player = game:GetService("Players").LocalPlayer
+    if not player then return end
+    local character = player.Character or player.CharacterAdded:Wait()
+    if not character then return end
+    local rootPart = character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("RootPart") or character:FindFirstChild("Torso") or character:FindFirstChild("UpperTorso")
+    if not rootPart then return end
+    local gameplay, gameplayName = getGameplayFolder()
+    if not gameplay then return end
+    local enemiesFolder = gameplay:FindFirstChild("Enemies")
+    if not enemiesFolder then return end
+    local enemyRoot = findFirstEnemyRootPart(enemiesFolder)
+    if not enemyRoot then return end
+    local heightOffset = 5
+    local targetPosition = enemyRoot.Position + Vector3.new(0, heightOffset, -2)
+    rootPart.CFrame = CFrame.new(targetPosition, enemyRoot.Position)
+    rootPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    rootPart.Velocity = Vector3.new(0, 0, 0)
+end
+
+local function getLootItems()
+    local lootItems = {}
+    local lootFolder = workspace:FindFirstChild("Loot")
+    if not lootFolder then return lootItems end
+    for _, item in pairs(lootFolder:GetChildren()) do
+        if item:IsA("BasePart") then
+            table.insert(lootItems, {pos = item.Position})
+        elseif item:IsA("Model") then
+            local part = item.PrimaryPart or item:FindFirstChildWhichIsA("BasePart")
+            if part then table.insert(lootItems, {pos = part.Position}) end
+        end
+    end
+    return lootItems
+end
+
+local function teleportToLoot()
+    local threshold = getgenv().Config["Tp Loot"]
+    if threshold == false or type(threshold) ~= "number" then return end
+    local lootItems = getLootItems()
+    if #lootItems >= threshold then
+        local char = player.Character
+        if not char then return end
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+        local currentPos = root.Position
+        local nearest = nil
+        local nearestDist = math.huge
+        for _, loot in ipairs(lootItems) do
+            local dist = (loot.pos - currentPos).magnitude
+            if dist < nearestDist then nearestDist = dist; nearest = loot end
+        end
+        if nearest then
+            root.CFrame = CFrame.new(Vector3.new(nearest.pos.X, nearest.pos.Y + 1, nearest.pos.Z))
+            print("[Loot] Teleported! Count:", #lootItems)
+        end
+    end
+end
+
+-- ============================================================
+--  STATS HUD
+-- ============================================================
+local Stats = {
+    rolls     = 0,
+    rebirths  = 0,
+    upgrades  = 0,
+    zones     = 0,
+    startTime = tick(),
+    action    = "starting up",
+}
+
+local function fmt(n)
+    if type(n) ~= "number" then return "0" end
+    if n >= 1e15 then return string.format("%.2fQ",  n/1e15)
+    elseif n >= 1e12 then return string.format("%.2fT",  n/1e12)
+    elseif n >= 1e9  then return string.format("%.2fB",  n/1e9)
+    elseif n >= 1e6  then return string.format("%.2fM",  n/1e6)
+    elseif n >= 1e3  then return string.format("%.1fK",  n/1e3)
+    else return tostring(math.floor(n)) end
+end
+
+local function fmtTime(s)
+    s = math.floor(s)
+    local h = math.floor(s/3600)
+    local m = math.floor((s%3600)/60)
+    local sec = s%60
+    if h > 0 then return string.format("%dh%dm", h, m)
+    elseif m > 0 then return string.format("%dm%ds", m, sec)
+    else return string.format("%ds", sec) end
+end
+
+local function createHUD()
+    local existing = player.PlayerGui:FindFirstChild("SRNGHud")
+    if existing then existing:Destroy() end
+
+    local C = {
+        bg      = Color3.fromRGB(9, 9, 13),
+        panel   = Color3.fromRGB(14, 14, 20),
+        border  = Color3.fromRGB(30, 30, 42),
+        accent  = Color3.fromRGB(0, 210, 160),
+        dim     = Color3.fromRGB(70, 70, 95),
+        text    = Color3.fromRGB(210, 215, 225),
+        val     = Color3.fromRGB(240, 245, 255),
+        good    = Color3.fromRGB(60, 225, 140),
+        warn    = Color3.fromRGB(255, 190, 55),
+        bad     = Color3.fromRGB(220, 70, 70),
+        head    = Color3.fromRGB(0, 210, 160),
+    }
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "SRNGHud"
+    gui.ResetOnSpawn = false
+    gui.DisplayOrder = 999
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = player.PlayerGui
+
+    -- Outer frame
+    local W, H = 210, 298
+    local frame = Instance.new("Frame")
+    frame.Name = "HUD"
+    frame.Size = UDim2.new(0, W, 0, H)
+    frame.Position = UDim2.new(0, 16, 0, 16)
+    frame.BackgroundColor3 = C.bg
+    frame.BorderSizePixel = 0
+    frame.Parent = gui
+
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 6)
+
+    -- Thin border stroke
+    local stroke = Instance.new("UIStroke", frame)
+    stroke.Color = C.border
+    stroke.Thickness = 1
+
+    -- Accent left bar
+    local bar = Instance.new("Frame", frame)
+    bar.Size = UDim2.new(0, 2, 1, -12)
+    bar.Position = UDim2.new(0, 0, 0, 6)
+    bar.BackgroundColor3 = C.accent
+    bar.BorderSizePixel = 0
+    Instance.new("UICorner", bar).CornerRadius = UDim.new(0, 2)
+
+    -- Header strip
+    local header = Instance.new("Frame", frame)
+    header.Size = UDim2.new(1, 0, 0, 30)
+    header.BackgroundColor3 = C.panel
+    header.BorderSizePixel = 0
+
+    local hCorner = Instance.new("UICorner", header)
+    hCorner.CornerRadius = UDim.new(0, 6)
+
+    -- square off bottom of header
+    local hFix = Instance.new("Frame", header)
+    hFix.Size = UDim2.new(1, 0, 0.5, 0)
+    hFix.Position = UDim2.new(0, 0, 0.5, 0)
+    hFix.BackgroundColor3 = C.panel
+    hFix.BorderSizePixel = 0
+
+    -- Live dot
+    local dot = Instance.new("Frame", header)
+    dot.Size = UDim2.new(0, 6, 0, 6)
+    dot.Position = UDim2.new(0, 12, 0.5, -3)
+    dot.BackgroundColor3 = C.good
+    dot.BorderSizePixel = 0
+    Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
+
+    local title = Instance.new("TextLabel", header)
+    title.Size = UDim2.new(1, -60, 1, 0)
+    title.Position = UDim2.new(0, 24, 0, 0)
+    title.BackgroundTransparency = 1
+    title.Text = "SLIME RNG"
+    title.TextColor3 = C.val
+    title.TextSize = 11
+    title.Font = Enum.Font.GothamBold
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.LetterSpacing = 4
+
+    -- Minimize btn
+    local minBtn = Instance.new("TextButton", header)
+    minBtn.Size = UDim2.new(0, 20, 0, 20)
+    minBtn.Position = UDim2.new(1, -26, 0.5, -10)
+    minBtn.BackgroundColor3 = C.border
+    minBtn.Text = "_"
+    minBtn.TextColor3 = C.dim
+    minBtn.TextSize = 11
+    minBtn.Font = Enum.Font.GothamBold
+    minBtn.BorderSizePixel = 0
+    Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 4)
+
+    -- Body
+    local body = Instance.new("Frame", frame)
+    body.Name = "Body"
+    body.Size = UDim2.new(1, -16, 1, -38)
+    body.Position = UDim2.new(0, 8, 0, 34)
+    body.BackgroundTransparency = 1
+
+    local layout = Instance.new("UIListLayout", body)
+    layout.FillDirection = Enum.FillDirection.Vertical
+    layout.Padding = UDim.new(0, 1)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+
+    -- Ref table
+    local refs = {}
+
+    -- Category label
+    local function cat(label, order)
+        local f = Instance.new("Frame", body)
+        f.Size = UDim2.new(1, 0, 0, 18)
+        f.BackgroundTransparency = 1
+        f.LayoutOrder = order
+
+        local l = Instance.new("TextLabel", f)
+        l.Size = UDim2.new(1, 0, 1, 0)
+        l.BackgroundTransparency = 1
+        l.Text = label
+        l.TextColor3 = C.dim
+        l.TextSize = 9
+        l.Font = Enum.Font.GothamBold
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.LetterSpacing = 5
+    end
+
+    -- Stat row: label on left, value on right
+    local function row(label, key, order, defaultVal)
+        local f = Instance.new("Frame", body)
+        f.Size = UDim2.new(1, 0, 0, 17)
+        f.BackgroundTransparency = 1
+        f.LayoutOrder = order
+
+        local lbl = Instance.new("TextLabel", f)
+        lbl.Size = UDim2.new(0.52, 0, 1, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = label
+        lbl.TextColor3 = C.text
+        lbl.TextSize = 11
+        lbl.Font = Enum.Font.Gotham
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+        local val = Instance.new("TextLabel", f)
+        val.Size = UDim2.new(0.48, 0, 1, 0)
+        val.Position = UDim2.new(0.52, 0, 0, 0)
+        val.BackgroundTransparency = 1
+        val.Text = defaultVal or "--"
+        val.TextColor3 = C.val
+        val.TextSize = 11
+        val.Font = Enum.Font.Code
+        val.TextXAlignment = Enum.TextXAlignment.Right
+
+        refs[key] = val
+        return val
+    end
+
+    -- Thin separator
+    local function sep(order)
+        local f = Instance.new("Frame", body)
+        f.Size = UDim2.new(1, 0, 0, 8)
+        f.BackgroundTransparency = 1
+        f.LayoutOrder = order
+        local line = Instance.new("Frame", f)
+        line.Size = UDim2.new(1, 0, 0, 1)
+        line.Position = UDim2.new(0, 0, 0.5, 0)
+        line.BackgroundColor3 = C.border
+        line.BorderSizePixel = 0
+    end
+
+    -- Boost row (colored dot + label + state)
+    local function boostRow(label, key, order)
+        local f = Instance.new("Frame", body)
+        f.Size = UDim2.new(1, 0, 0, 17)
+        f.BackgroundTransparency = 1
+        f.LayoutOrder = order
+
+        local indicator = Instance.new("Frame", f)
+        indicator.Size = UDim2.new(0, 5, 0, 5)
+        indicator.Position = UDim2.new(0, 0, 0.5, -2)
+        indicator.BackgroundColor3 = C.bad
+        indicator.BorderSizePixel = 0
+        Instance.new("UICorner", indicator).CornerRadius = UDim.new(1, 0)
+
+        local lbl = Instance.new("TextLabel", f)
+        lbl.Size = UDim2.new(0.6, -10, 1, 0)
+        lbl.Position = UDim2.new(0, 10, 0, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = label
+        lbl.TextColor3 = C.text
+        lbl.TextSize = 11
+        lbl.Font = Enum.Font.Gotham
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+        local val = Instance.new("TextLabel", f)
+        val.Size = UDim2.new(0.4, 0, 1, 0)
+        val.Position = UDim2.new(0.6, 0, 0, 0)
+        val.BackgroundTransparency = 1
+        val.Text = "OFF"
+        val.TextColor3 = C.bad
+        val.TextSize = 11
+        val.Font = Enum.Font.Code
+        val.TextXAlignment = Enum.TextXAlignment.Right
+
+        refs[key] = {dot = indicator, lbl = val}
+        return refs[key]
+    end
+
+    -- Status bar at the bottom
+    local statusBar = Instance.new("Frame", frame)
+    statusBar.Size = UDim2.new(1, -16, 0, 20)
+    statusBar.Position = UDim2.new(0, 8, 1, -26)
+    statusBar.BackgroundColor3 = C.panel
+    statusBar.BorderSizePixel = 0
+    Instance.new("UICorner", statusBar).CornerRadius = UDim.new(0, 4)
+
+    local statusTxt = Instance.new("TextLabel", statusBar)
+    statusTxt.Size = UDim2.new(1, -10, 1, 0)
+    statusTxt.Position = UDim2.new(0, 8, 0, 0)
+    statusTxt.BackgroundTransparency = 1
+    statusTxt.Text = "starting up"
+    statusTxt.TextColor3 = C.accent
+    statusTxt.TextSize = 10
+    statusTxt.Font = Enum.Font.Code
+    statusTxt.TextXAlignment = Enum.TextXAlignment.Left
+    statusTxt.TextTruncate = Enum.TextTruncate.AtEnd
+    refs["status"] = statusTxt
+
+    -- Build rows
+    cat("ECONOMY", 1)
+    row("coins",        "coins",    2, "0")
+    row("goop",         "goop",     3, "0")
+    row("rebirths",     "rbs",      4, "0")
+    row("next rebirth", "rbcost",   5, "0")
+    sep(6)
+    cat("SESSION", 7)
+    row("rolls",        "rolls",    8,  "0")
+    row("rebirths",     "srbs",     9,  "0")
+    row("upgrades",     "supg",     10, "0")
+    row("zones",        "szon",     11, "0")
+    row("uptime",       "uptime",   12, "0s")
+    sep(13)
+    cat("BOOSTS", 14)
+    boostRow("luck",       "b_luck",      15)
+    boostRow("ultra luck", "b_ultraLuck", 16)
+    boostRow("currency",   "b_currency",  17)
+    boostRow("roll speed", "b_rollSpeed", 18)
+
+    -- Dragging
+    local dragging, dragStart, startPos = false, nil, nil
+    header.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            dragging = true; dragStart = i.Position; startPos = frame.Position
+        end
+    end)
+    uis.InputChanged:Connect(function(i)
+        if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+            local d = i.Position - dragStart
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+    uis.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+
+    -- Minimize
+    local minimized = false
+    minBtn.MouseButton1Click:Connect(function()
+        minimized = not minimized
+        body.Visible    = not minimized
+        statusBar.Visible = not minimized
+        frame.Size = minimized and UDim2.new(0, W, 0, 30) or UDim2.new(0, W, 0, H)
+        minBtn.Text = minimized and "+" or "_"
+    end)
+
+    -- Blinking dot coroutine
+    spawn(function()
+        while true do
+            dot.BackgroundColor3 = C.good
+            wait(0.9)
+            dot.BackgroundColor3 = C.panel
+            wait(0.25)
+        end
+    end)
+
+    -- Update loop
+    spawn(function()
+        while true do
+            pcall(function()
+                local coins    = getCurrentCoins()
+                local goop     = getCurrentGoop()
+                local rbs      = getRebirthCount()
+                local rbcost   = getRebirthCost()
+                local zone     = getCurrentMaxZone()
+                local uptime   = tick() - Stats.startTime
+
+                refs["coins"].Text  = fmt(coins)
+                refs["goop"].Text   = fmt(goop)
+                refs["rbs"].Text    = fmt(rbs)
+                refs["uptime"].Text = fmtTime(uptime)
+                refs["rolls"].Text  = fmt(Stats.rolls)
+                refs["srbs"].Text   = fmt(Stats.rebirths)
+                refs["supg"].Text   = fmt(Stats.upgrades)
+                refs["szon"].Text   = fmt(Stats.zones)
+
+                refs["rbcost"].Text = fmt(rbcost)
+                refs["rbcost"].TextColor3 = goop >= rbcost and C.good or C.warn
+
+                refs["status"].Text = Stats.action
+
+                local boostMap = {
+                    b_luck      = "luck",
+                    b_ultraLuck = "ultraLuck",
+                    b_currency  = "currency",
+                    b_rollSpeed = "rollSpeed",
+                }
+                for k, btype in pairs(boostMap) do
+                    local active = isBoostActive(btype)
+                    if refs[k] then
+                        refs[k].dot.BackgroundColor3 = active and C.good or C.bad
+                        refs[k].lbl.Text = active and "ON" or "OFF"
+                        refs[k].lbl.TextColor3 = active and C.good or C.dim
+                    end
+                end
+            end)
+            wait(1)
+        end
+    end)
+end
+
+-- ============================================================
+-- MAIN LOOPS
+-- ============================================================
+local function startAutoRebirth()
+    if getgenv().AutoRebirthStarted then return end
+    getgenv().AutoRebirthStarted = true
+    spawn(function()
+        while getgenv().Config["Auto Rebirth"] do
+            if canAffordRebirth() then
+                Stats.action = "rebirthing"
+                local remote = replicatedStorage.Packages._Index["leifstout_networker@0.3.1"].networker._remotes.RebirthService.RemoteFunction
+                pcall(function() remote:InvokeServer("requestRebirth") end)
+                Stats.rebirths = Stats.rebirths + 1
+                wait(1)
+            else
+                local g, c = getCurrentGoop(), getRebirthCost()
+                Stats.action = "saving goop " .. fmt(g) .. "/" .. fmt(c)
+            end
+            wait(0.5)
+        end
+    end)
+end
+
+local function startAutoRoll()
+    if getgenv().AutoRollStarted then return end
+    getgenv().AutoRollStarted = true
+    spawn(function()
+        local remote = replicatedStorage.Packages._Index["leifstout_networker@0.3.1"].networker._remotes.RollService.RemoteFunction
+        while getgenv().Config["Auto Roll"] do
+            pcall(function() remote:InvokeServer("requestRoll") end)
+            Stats.rolls = Stats.rolls + 1
+            Stats.action = "rolling  [" .. fmt(Stats.rolls) .. " rolls]"
+            if getgenv().Config["Auto Equip Best"] then equipBestItems() end
+            wait(getgenv().Config["Roll Interval(S)"] or 0.4)
+        end
+    end)
+end
+
+local function startAutoClaim()
+    if not getgenv().Config["Claim Rewards"] then return end
+    spawn(function()
+        local types = {"basic", "big", "huge", "shiny", "inverted"}
+        while getgenv().Config["Claim Rewards"] do
+            Stats.action = "claiming rewards"
+            for _, t in ipairs(types) do claimReward(t) end
+            local likeEvent = replicatedStorage.Packages._Index["leifstout_networker@0.3.1"].networker._remotes.LikeGroupService.RemoteEvent
+            pcall(function() likeEvent:FireServer("requestConfirmPrompt") end)
+            wait(30)
+        end
+    end)
+end
+
+local function startAutoUpgrade()
+    if getgenv().AutoUpgradeStarted then return end
+    getgenv().AutoUpgradeStarted = true
+    loadOwnedUpgrades()
+    spawn(function()
+        while getgenv().Config["Auto Buy Upgrades"] do
+            local coins = getCurrentCoins()
+            for _, item in ipairs(upgradesWithCost) do
+                local upgradeId = item[1]
+                if not isUpgradeBlacklisted(upgradeId) then
+                    if not isUpgradeOwned(upgradeId) and coins >= item[2] then
+                        if tryBuyUpgrade(upgradeId, coins) then
+                            Stats.upgrades = Stats.upgrades + 1
+                            Stats.action = "bought  " .. upgradeId
+                            coins = getCurrentCoins()
+                            wait(0.2)
+                        end
+                    end
+                end
+            end
+            wait(2)
+        end
+    end)
+end
+
+local function startAutoBuyZones()
+    spawn(function()
+        while getgenv().Config["Auto Buy Zones"] do
+            local currentZone = getCurrentMaxZone()
+            local nextZone = currentZone + 1
+            local price = getZonePrice(nextZone)
+            local coins = getCurrentCoins()
+            if price and coins >= price then
+                local remote = replicatedStorage.Packages._Index["leifstout_networker@0.3.1"].networker._remotes.ZonesService.RemoteFunction
+                local success = pcall(function() return remote:InvokeServer("requestPurchaseZone") end)
+                if success then
+                    Stats.zones = Stats.zones + 1
+                    Stats.action = "unlocked zone " .. nextZone
+                    wait(0.5)
+                    local newBestZone = getCurrentMaxZone()
+                    teleportToZone(newBestZone)
+                end
+            end
+            wait(0.5)
+        end
+    end)
+end
+
+local function startTeleportLoop()
+    spawn(function()
+        local lastZoneCheck = 0
+        while getgenv().Config["Teleport To Enemies"] do
+            teleportToEnemy()
+            teleportToLoot()
+            if tick() - lastZoneCheck > 30 then
+                local bestZone = getCurrentMaxZone()
+                if bestZone > 1 then teleportToZone(bestZone) end
+                lastZoneCheck = tick()
+            end
+            wait(1)
+        end
+    end)
+end
+
+local function startAutoBoost()
+    if getgenv().AutoBoostStarted then return end
+    if not getgenv().Config["Auto Use Boosts"] then return end
+    getgenv().AutoBoostStarted = true
+    spawn(function()
+        while getgenv().Config["Auto Use Boosts"] do
+            for _, boostType in ipairs(boostTypes) do
+                if useBoostIfNeeded(boostType) then
+                    Stats.action = "activated " .. boostType .. " boost"
+                end
+                wait(0.3)
+            end
+            wait(30)
+        end
+    end)
+end
+
+local function forceDeleteInstances()
+    local deleted = 0
+    for _, child in pairs(workspace:GetChildren()) do
+        if child.Name:match("^Gameplay%d+$") then
+            local slimes = child:FindFirstChild("Slimes")
+            if slimes then pcall(function() slimes:Destroy() end); deleted = deleted + 1 end
+        end
+    end
+    local lb = workspace:FindFirstChild("Leaderboards")
+    if lb then pcall(function() lb:Destroy() end); deleted = deleted + 1 end
+    local zones = workspace:FindFirstChild("Zones")
+    if zones then pcall(function() zones:Destroy() end); deleted = deleted + 1 end
+end
+
+local function startOptimization()
+    if not getgenv().Config["Delete Unnecessary"] then return end
+    forceDeleteInstances()
+    spawn(function()
+        while getgenv().Config["Delete Unnecessary"] do
+            wait(5)
+            forceDeleteInstances()
+        end
+    end)
+end
+
+local function claimOffline()
+    if getgenv().OfflineRewardsClaimed then return end
+    local remote = replicatedStorage.Packages._Index["leifstout_networker@0.3.1"].networker._remotes.OfflineEarningsService.RemoteFunction
+    local success = pcall(function() remote:InvokeServer("requestClaim") end)
+    if success then getgenv().OfflineRewardsClaimed = true end
+end
+
+local function onGameLoaded()
+    loadOwnedUpgrades()
+    claimOffline()
+    createHUD()
+    startAutoClaim()
+    startAutoRebirth()
+    startAutoRoll()
+    startAutoBuyZones()
+    startAutoUpgrade()
+    startAutoBoost()
+    startTeleportLoop()
+    startOptimization()
+    print("[Slime RNG] loaded")
+end
+
+if game:IsLoaded() then onGameLoaded() else game.Loaded:Wait(); onGameLoaded() end
