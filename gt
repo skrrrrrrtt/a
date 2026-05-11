@@ -1,0 +1,137 @@
+repeat task.wait() until game:IsLoaded()
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local LocalPlayer = Players.LocalPlayer
+
+-- // CONFIG
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1440202664389640242/RR2NiQ4WqbtRy4zH9YmmQcdW4YgPCqz22HCBnW-XVd0nNvH1WklGYX_eDjoyQyF8ruoU"
+local INTERVAL = 60 * 60
+
+getgenv().GINVENTORY_COUNTS = {
+    {Class = "Currency", Item = "RngCoins2",             Name = "RNG Coins"},
+    {Class = "Currency", Item = "Diamonds",              Name = "Diamonds Left"},
+    {Class = "Misc",     Item = "Lucky Dice V2",         Name = "Lucky Dice V2"},
+    {Class = "Misc",     Item = "Lucky Dice II V2",      Name = "Lucky Dice II V2"},
+    {Class = "Misc",     Item = "Mega Lucky Dice V2",    Name = "Mega Lucky Dice V2"},
+    {Class = "Misc",     Item = "Mega Lucky Dice II V2", Name = "Mega Lucky Dice II V2"},
+    {Class = "Pet",      Item = "Huge Nebula Lion",      Name = "Huge Nebula Lion"},
+    {Class = "Pet",      Item = "Huge Eclipse Owl",      Name = "Huge Eclipse Owl"},
+    {Class = "Pet",      Item = "Huge Cataclysm Bear",   Name = "Huge Cataclysm Bear"},
+}
+
+repeat task.wait() until not LocalPlayer.PlayerGui:FindFirstChild("__INTRO")
+
+local Save
+local ok, res = pcall(function() return require(ReplicatedStorage.Library.Client.Save) end)
+if ok then Save = res else warn("Save failed: " .. tostring(res)) return end
+
+local prevCounts = {}
+
+local function fmtComma(n)
+    local s = tostring(math.floor(n))
+    return s:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+end
+
+local function fmtDelta(current, prev)
+    if prev == nil then return "`" .. fmtComma(current) .. "`" end
+    local delta = current - prev
+    local sign = delta >= 0 and "+" or ""
+    return string.format("`%s` `%s%s/h`", fmtComma(current), sign, fmtComma(delta))
+end
+
+local function getCounts()
+    local counts = {}
+    local ok, data = pcall(function() return Save.Get() end)
+    if not ok or not data then return counts end
+
+    local inv = data.Inventory or {}
+
+    for _, entry in ipairs(GINVENTORY_COUNTS) do
+        local key = entry.Class .. ":" .. entry.Item
+        counts[key] = 0
+
+        if entry.Class == "Currency" then
+            -- try Inventory.Currency first, then root
+            local cur = inv["Currency"] or data["Currency"]
+            if cur then
+                counts[key] = cur[entry.Item] or 0
+            end
+
+        elseif entry.Class == "Misc" then
+            local classData = inv["Misc"]
+            if classData then
+                for _, item in pairs(classData) do
+                    if item.id == entry.Item then
+                        counts[key] += (item._am or 1)
+                    end
+                end
+            end
+
+        elseif entry.Class == "Pet" then
+            local classData = inv["Pet"]
+            if classData then
+                for _, item in pairs(classData) do
+                    if item.id == entry.Item then
+                        counts[key] += 1
+                    end
+                end
+            end
+        end
+    end
+
+    return counts
+end
+
+local function getAvatarUrl(userId)
+    return string.format("https://www.roblox.com/bust-thumbnail/image?userId=%d&width=420&height=420&format=png", userId)
+end
+
+local function sendWebhook(counts, isFirst)
+    local lines = {}
+    table.insert(lines, "👤 **User Info:**")
+    table.insert(lines, "   **In Account:** `" .. LocalPlayer.Name .. "`")
+
+    for _, entry in ipairs(GINVENTORY_COUNTS) do
+        local key = entry.Class .. ":" .. entry.Item
+        local current = counts[key] or 0
+        local prev = isFirst and nil or prevCounts[key]
+        local displayName = entry.Name or entry.Item
+        table.insert(lines, string.format("   **%s:** %s", displayName, fmtDelta(current, prev)))
+    end
+
+    local body = HttpService:JSONEncode({
+        embeds = {{
+            title = "📊 " .. LocalPlayer.Name .. "'s Inventory Report",
+            description = table.concat(lines, "\n"),
+            color = 0xFAA61A, -- yellow like ZapHub
+            thumbnail = { url = getAvatarUrl(LocalPlayer.UserId) },
+            timestamp = DateTime.now():ToIsoDate(),
+            footer = { text = "Next update in 1 hour" }
+        }}
+    })
+
+    pcall(function()
+        request({
+            Url = WEBHOOK_URL,
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = body
+        })
+    end)
+
+    print("[Monitor] Sent - " .. LocalPlayer.Name)
+end
+
+local isFirst = true
+while true do
+    local counts = getCounts()
+    sendWebhook(counts, isFirst)
+    for _, entry in ipairs(GINVENTORY_COUNTS) do
+        local key = entry.Class .. ":" .. entry.Item
+        prevCounts[key] = counts[key]
+    end
+    isFirst = false
+    task.wait(INTERVAL)
+end
