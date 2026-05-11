@@ -1,0 +1,281 @@
+repeat task.wait() until game:IsLoaded()
+
+local Players      = game:GetService("Players")
+local RunService   = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer  = Players.LocalPlayer
+
+repeat task.wait() until not LocalPlayer.PlayerGui:FindFirstChild("__INTRO")
+
+-- =========================
+-- ANTI AFK
+-- =========================
+pcall(function()
+    local Network = require(ReplicatedStorage.Library.Client.Network)
+    LocalPlayer.PlayerScripts.Scripts.Core["Idle Tracking"].Enabled = false
+    LocalPlayer.PlayerScripts.Scripts.Core["Server Closing"].Enabled = false
+    Network.Fire("Idle Tracking: Stop Timer")
+    for _, conn in ipairs(getconnections(LocalPlayer.Idled)) do conn:Disable() end
+end)
+
+-- =========================
+-- SAVE MODULE
+-- =========================
+local Save
+pcall(function() Save = require(ReplicatedStorage.Library.Client.Save) end)
+
+-- =========================
+-- CLEANUP OLD UI
+-- =========================
+pcall(function()
+    for _, v in pairs(game:GetService("CoreGui"):GetChildren()) do
+        if v.Name == "RNG_EVENT_UI" then v:Destroy() end
+    end
+end)
+
+task.wait(1)
+
+-- =========================
+-- DICE CONFIG
+-- =========================
+local DICE = {
+    { id = "Lucky Dice V2",         short = "Lucky V2" },
+    { id = "Lucky Dice II V2",      short = "Lucky II V2" },
+    { id = "Mega Lucky Dice V2",    short = "Mega V2" },
+    { id = "Mega Lucky Dice II V2", short = "Mega II V2" },
+}
+
+-- =========================
+-- STATE
+-- =========================
+local startTime     = os.time()
+local fps           = 0
+local prevTotal     = 0
+local rollSpeed     = 0
+local diceCounts    = {}
+for _, d in ipairs(DICE) do diceCounts[d.id] = 0 end
+
+-- =========================
+-- BUILD UI
+-- =========================
+local CoreGui  = game:GetService("CoreGui")
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name            = "RNG_EVENT_UI"
+ScreenGui.IgnoreGuiInset  = true
+ScreenGui.ResetOnSpawn    = false
+ScreenGui.ZIndexBehavior  = Enum.ZIndexBehavior.Global
+ScreenGui.DisplayOrder    = 999999999
+ScreenGui.Parent          = CoreGui
+
+-- UIScale
+local UIScale = Instance.new("UIScale", ScreenGui)
+local function updateScale()
+    local cam = workspace.CurrentCamera
+    if cam then UIScale.Scale = (cam.ViewportSize.Y / 1080) * 1.2 end
+end
+updateScale()
+workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
+
+-- Fullscreen BG
+local bg = Instance.new("Frame")
+bg.AnchorPoint      = Vector2.new(0.5, 0.5)
+bg.Position         = UDim2.fromScale(0.5, 0.5)
+bg.Size             = UDim2.fromScale(2, 2)
+bg.BackgroundColor3 = Color3.fromRGB(5, 5, 8)
+bg.BorderSizePixel  = 0
+bg.ZIndex           = 1
+bg.Parent           = ScreenGui
+
+-- Main card
+local card = Instance.new("Frame")
+card.AnchorPoint      = Vector2.new(0.5, 0.5)
+card.Position         = UDim2.fromScale(0.5, 0.5)
+card.Size             = UDim2.fromOffset(820, 520)
+card.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+card.BorderSizePixel  = 0
+card.ZIndex           = 2
+card.Parent           = ScreenGui
+
+-- Green border stroke
+local stroke = Instance.new("UIStroke", card)
+stroke.Color     = Color3.fromRGB(0, 255, 100)
+stroke.Thickness = 2
+stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+
+Instance.new("UICorner", card).CornerRadius = UDim.new(0, 10)
+
+-- Helper: green separator
+local function addSep(parent, yPos)
+    local sep = Instance.new("Frame")
+    sep.Size              = UDim2.new(1, 0, 0, 2)
+    sep.Position          = UDim2.new(0, 0, 0, yPos)
+    sep.BackgroundColor3  = Color3.fromRGB(0, 255, 100)
+    sep.BorderSizePixel   = 0
+    sep.ZIndex            = 3
+    sep.Parent            = parent
+    return sep
+end
+
+-- Helper: text row
+local function addRow(parent, yPos, height, textSize, color)
+    color = color or Color3.fromRGB(255, 255, 255)
+    local lbl = Instance.new("TextLabel")
+    lbl.Size                 = UDim2.new(1, -20, 0, height)
+    lbl.Position             = UDim2.new(0, 10, 0, yPos)
+    lbl.BackgroundTransparency = 1
+    lbl.TextColor3           = color
+    lbl.Font                 = Enum.Font.GothamBold
+    lbl.TextSize             = textSize
+    lbl.TextXAlignment       = Enum.TextXAlignment.Center
+    lbl.TextStrokeTransparency = 0.5
+    lbl.TextStrokeColor3     = Color3.fromRGB(0, 0, 0)
+    lbl.ZIndex               = 4
+    lbl.Text                 = ""
+    lbl.Parent               = parent
+    return lbl
+end
+
+-- ROWS
+--  Y   H    TSize
+local rowTitle  = addRow(card,   8,  60,  32,  Color3.fromRGB(255, 255, 255))
+addSep(card, 70)
+local rowTime   = addRow(card,  75,  48,  22)
+addSep(card, 124)
+local rowSpeed  = addRow(card, 128,  48,  22)
+addSep(card, 177)
+local rowDice1  = addRow(card, 181,  48,  20)
+addSep(card, 230)
+local rowDice2  = addRow(card, 234,  48,  20)
+addSep(card, 283)
+local rowDice3  = addRow(card, 287,  48,  20)
+addSep(card, 336)
+local rowDice4  = addRow(card, 340,  48,  20)
+addSep(card, 389)
+local rowFPS    = addRow(card, 393,  48,  22,  Color3.fromRGB(180, 180, 180))
+
+rowTitle.Text = "🐰  RNG EVENT  🐰"
+
+-- =========================
+-- OPEN / CLOSE BUTTONS
+-- =========================
+local function makeBtn(text, color)
+    local btn = Instance.new("TextButton")
+    btn.Size              = UDim2.fromOffset(160, 44)
+    btn.AnchorPoint       = Vector2.new(0.5, 1)
+    btn.Position          = UDim2.new(0.5, 0, 1, -20)
+    btn.BackgroundColor3  = color
+    btn.TextColor3        = Color3.new(1, 1, 1)
+    btn.Font              = Enum.Font.GothamBold
+    btn.TextSize          = 18
+    btn.Text              = text
+    btn.ZIndex            = 10
+    btn.Parent            = ScreenGui
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+    return btn
+end
+
+local closeBtn = makeBtn("✕  CLOSE",      Color3.fromRGB(200, 30, 50))
+local openBtn  = makeBtn("▶  OPEN STATS", Color3.fromRGB(30, 180, 80))
+openBtn.Visible = false
+
+local function setVisible(v)
+    bg.Visible        = v
+    card.Visible      = v
+    closeBtn.Visible  = v
+    openBtn.Visible   = not v
+end
+
+closeBtn.MouseButton1Click:Connect(function() setVisible(false) end)
+openBtn.MouseButton1Click:Connect(function() setVisible(true) end)
+
+-- =========================
+-- FPS TRACKER
+-- =========================
+local frameCount = 0
+local fpsTimer   = 0
+RunService.RenderStepped:Connect(function(dt)
+    frameCount += 1
+    fpsTimer   += dt
+    if fpsTimer >= 1 then
+        fps        = frameCount
+        frameCount = 0
+        fpsTimer   = 0
+    end
+end)
+
+-- =========================
+-- GET DICE COUNTS
+-- =========================
+local function getDiceCounts()
+    local counts = {}
+    for _, d in ipairs(DICE) do counts[d.id] = 0 end
+    if not Save then return counts end
+
+    local ok, root = pcall(function() return Save.Get() end)
+    if not ok or not root then return counts end
+
+    local misc = (root.Inventory or {})["Misc"] or {}
+    for _, item in pairs(misc) do
+        if counts[item.id] ~= nil then
+            counts[item.id] += (item._am or 1)
+        end
+    end
+    return counts
+end
+
+-- =========================
+-- FORMAT NUMBERS
+-- =========================
+local function fmt(n)
+    if n >= 1e9 then return string.format("%.2fB", n/1e9)
+    elseif n >= 1e6 then return string.format("%.2fM", n/1e6)
+    elseif n >= 1e3 then return string.format("%.2fK", n/1e3)
+    else return tostring(math.floor(n)) end
+end
+
+-- =========================
+-- UPDATE LOOP
+-- =========================
+local speedSamples = {}
+local lastSampleTime = os.clock()
+
+task.spawn(function()
+    while task.wait(1) do
+        -- time
+        local elapsed = os.time() - startTime
+        local h = math.floor(elapsed / 3600)
+        local m = math.floor((elapsed % 3600) / 60)
+        local s = elapsed % 60
+        rowTime.Text = string.format("⏱  Time:  %02d:%02d:%02d", h, m, s)
+
+        -- dice counts
+        diceCounts = getDiceCounts()
+
+        -- total rolls
+        local total = 0
+        for _, d in ipairs(DICE) do total += diceCounts[d.id] end
+
+        -- speed (rolling avg over 5s)
+        local now = os.clock()
+        local delta = total - prevTotal
+        prevTotal = total
+        table.insert(speedSamples, delta)
+        if #speedSamples > 5 then table.remove(speedSamples, 1) end
+        local sum = 0
+        for _, v in ipairs(speedSamples) do sum += v end
+        rollSpeed = math.floor(sum / #speedSamples)
+
+        rowSpeed.Text = string.format("🎲  Total Rolls: %s   |   ⚡ Speed: %s/s", fmt(total), fmt(rollSpeed))
+
+        -- individual dice
+        rowDice1.Text = string.format("Lucky Dice V2: %s   |   Lucky Dice II V2: %s",
+            fmt(diceCounts["Lucky Dice V2"]), fmt(diceCounts["Lucky Dice II V2"]))
+
+        rowDice2.Text = string.format("Mega Lucky Dice V2: %s", fmt(diceCounts["Mega Lucky Dice V2"]))
+        rowDice3.Text = string.format("Mega Lucky Dice II V2: %s", fmt(diceCounts["Mega Lucky Dice II V2"]))
+        rowDice4.Text = ""  -- spare row, can add more stats
+
+        -- fps
+        rowFPS.Text = string.format("FPS:  %d", fps)
+    end
+end)
