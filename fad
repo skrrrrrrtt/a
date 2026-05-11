@@ -1,0 +1,159 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local LocalPlayer = Players.LocalPlayer
+
+-- // CONFIG
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1440202664389640242/RR2NiQ4WqbtRy4zH9YmmQcdW4YgPCqz22HCBnW-XVd0nNvH1WklGYX_eDjoyQyF8ruoU"
+local INTERVAL = 60 * 60 -- 1 hour
+
+getgenv().GINVENTORY_COUNTS = {
+    {Class = "Currency", Item = "RngCoins2"},
+    {Class = "Currency", Item = "Diamonds"},
+    {Class = "Misc",     Item = "Lucky Dice V2"},
+    {Class = "Misc",     Item = "Lucky Dice II V2"},
+    {Class = "Misc",     Item = "Mega Lucky Dice V2"},
+    {Class = "Misc",     Item = "Mega Lucky Dice II V2"},
+    {Class = "Pet",      Item = "Huge Nebula Lion"},
+    {Class = "Pet",      Item = "Huge Eclipse Owl"},
+    {Class = "Pet",      Item = "Huge Cataclysm Bear"},
+}
+
+repeat task.wait() until game:IsLoaded()
+repeat task.wait() until not LocalPlayer.PlayerGui:FindFirstChild("__INTRO")
+
+local Save = require(ReplicatedStorage.Library.Client.Save)
+
+-- // PREVIOUS SNAPSHOT
+local prevCounts = {}
+
+-- // FORMAT NUMBER WITH COMMAS
+local function fmtComma(n)
+    local s = tostring(math.floor(n))
+    return s:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+end
+
+-- // FORMAT DELTA
+local function fmtDelta(current, prev)
+    if prev == nil then return "`" .. fmtComma(current) .. "`" end
+    local delta = current - prev
+    local sign = delta >= 0 and "+" or ""
+    return string.format("`%s` (%s%s/h)", fmtComma(current), sign, fmtComma(delta))
+end
+
+-- // GET COUNTS
+local function getCounts()
+    local counts = {}
+    local ok, inv = pcall(function() return Save.Get().Inventory end)
+    if not ok or not inv then return counts end
+
+    for _, entry in ipairs(GINVENTORY_COUNTS) do
+        local key = entry.Class .. ":" .. entry.Item
+        counts[key] = 0
+
+        if entry.Class == "Currency" then
+            -- flat value
+            local classData = inv[entry.Class]
+            if classData then
+                counts[key] = classData[entry.Item] or 0
+            end
+
+        elseif entry.Class == "Misc" then
+            -- uses _am
+            local classData = inv[entry.Class]
+            if classData then
+                for _, data in pairs(classData) do
+                    if data.id == entry.Item then
+                        counts[key] += (data._am or 1)
+                    end
+                end
+            end
+
+        elseif entry.Class == "Pet" then
+            -- count individual pets
+            local classData = inv[entry.Class]
+            if classData then
+                for _, data in pairs(classData) do
+                    if data.id == entry.Item then
+                        counts[key] += 1
+                    end
+                end
+            end
+        end
+    end
+
+    return counts
+end
+
+-- // EMOJIS PER CLASS
+local classEmoji = {
+    Currency = "💎",
+    Misc     = "🎲",
+    Pet      = "🐾",
+}
+
+-- // ROBLOX AVATAR THUMBNAIL
+local function getAvatarUrl(userId)
+    return string.format("https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=%d&size=420x420&format=Png", userId)
+end
+
+-- // SEND WEBHOOK
+local function sendWebhook(counts, isFirst)
+    local lines = {}
+    table.insert(lines, string.format("👤 **User Info:**"))
+    table.insert(lines, string.format("┣ **In Account:** `%s`", LocalPlayer.Name))
+
+    for _, entry in ipairs(GINVENTORY_COUNTS) do
+        local key = entry.Class .. ":" .. entry.Item
+        local current = counts[key] or 0
+        local prev = prevCounts[key]
+        local emoji = classEmoji[entry.Class] or "📦"
+
+        if entry.Item == "Diamonds" then
+            table.insert(lines, string.format("┣ **Diamonds Left:** %s", fmtDelta(current, isFirst and nil or prev)))
+        else
+            table.insert(lines, string.format("┣ %s **%s:** %s", emoji, entry.Item, fmtDelta(current, isFirst and nil or prev)))
+        end
+    end
+
+    -- last line uses └ instead of ┣
+    local lastLine = table.remove(lines)
+    table.insert(lines, lastLine:gsub("┣", "┗"))
+
+    local body = HttpService:JSONEncode({
+        embeds = {{
+            title = "📊 " .. LocalPlayer.Name .. "'s Inventory Report",
+            description = table.concat(lines, "\n"),
+            color = 0xE74C3C,
+            timestamp = DateTime.now():ToIsoDate(),
+            thumbnail = { url = getAvatarUrl(LocalPlayer.UserId) },
+            footer = { text = "Next update in 1 hour" }
+        }}
+    })
+
+    pcall(function()
+        request({
+            Url = WEBHOOK_URL,
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = body
+        })
+    end)
+
+    print("[Inventory Monitor] Webhook sent - " .. LocalPlayer.Name)
+end
+
+-- // LOOP
+local isFirst = true
+while true do
+    local counts = getCounts()
+    sendWebhook(counts, isFirst)
+
+    for _, entry in ipairs(GINVENTORY_COUNTS) do
+        local key = entry.Class .. ":" .. entry.Item
+        prevCounts[key] = counts[key]
+    end
+
+    isFirst = false
+    task.wait(INTERVAL)
+end
