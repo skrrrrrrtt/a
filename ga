@@ -1,0 +1,342 @@
+local lp = game.Players.LocalPlayer
+local char = lp.Character
+local hrp = char.HumanoidRootPart
+local hum = char:FindFirstChildOfClass("Humanoid")
+local RunService = game:GetService("RunService")
+local RS = game:GetService("ReplicatedStorage")
+local genBackrooms = workspace.__THINGS.__INSTANCE_CONTAINER.Active.Backrooms.GeneratedBackrooms
+
+local eggsFolder = RS.__DIRECTORY.Eggs["Backrooms Update 2"]
+local multiToEgg = {}
+for _, egg in pairs(eggsFolder:GetChildren()) do
+    local multi = tonumber(egg.Name:match("(%d+)x$"))
+    local eggName = egg.Name:match("%| (.+) %d+x$")
+    if multi and eggName and not multiToEgg[multi] then
+        multiToEgg[multi] = eggName
+    end
+end
+
+local found = {}
+local foundKeys = {}
+
+local function tryAddRoom(room)
+    local roomID = room:GetAttribute("RoomID") or ""
+    local multi = room:GetAttribute("EggMultiplier")
+    if not roomID:lower():find("egg") or not multi then return end
+    local key = tostring(room)
+    if foundKeys[key] then return end
+    task.delay(0.4, function()
+        local eggModel = room:FindFirstChild("EggModel", true)
+        local part = eggModel and eggModel:FindFirstChildWhichIsA("BasePart")
+        if not part or foundKeys[key] then return end
+        foundKeys[key] = true
+        local eggName = multiToEgg[multi] or "Unknown"
+        table.insert(found, {
+            name = eggName, multi = multi,
+            part = part, deep = room:GetAttribute("DeepRoom"),
+            roomID = roomID, room = room
+        })
+        print("[+] " .. eggName .. " [" .. multi .. "x]")
+    end)
+end
+
+for _, room in pairs(genBackrooms:GetChildren()) do pcall(tryAddRoom, room) end
+local roomWatcher = genBackrooms.ChildAdded:Connect(function(room)
+    task.wait(0.2)
+    pcall(tryAddRoom, room)
+end)
+
+-- noclip
+hum.PlatformStand = true
+local noclip = RunService.Stepped:Connect(function()
+    for _, p in pairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then p.CanCollide = false end
+    end
+end)
+
+-- status UI
+local sg = Instance.new("ScreenGui")
+sg.Name = "SweepUI"
+sg.Parent = game:GetService("CoreGui")
+local frame = Instance.new("Frame", sg)
+frame.Size = UDim2.new(0, 400, 0, 70)
+frame.Position = UDim2.new(0.5, -200, 0, 10)
+frame.BackgroundColor3 = Color3.fromRGB(20,20,20)
+frame.BorderSizePixel = 0
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0,8)
+local lbl = Instance.new("TextLabel", frame)
+lbl.Size = UDim2.new(1,-90,0.5,0)
+lbl.Position = UDim2.new(0,8,0,4)
+lbl.BackgroundTransparency = 1
+lbl.TextColor3 = Color3.fromRGB(255,200,0)
+lbl.Font = Enum.Font.GothamBold
+lbl.TextSize = 13
+lbl.Text = "🔍 Phase 1: Room to room..."
+lbl.TextXAlignment = Enum.TextXAlignment.Left
+local lbl2 = Instance.new("TextLabel", frame)
+lbl2.Size = UDim2.new(1,-90,0.5,0)
+lbl2.Position = UDim2.new(0,8,0.5,0)
+lbl2.BackgroundTransparency = 1
+lbl2.TextColor3 = Color3.fromRGB(100,220,100)
+lbl2.Font = Enum.Font.Gotham
+lbl2.TextSize = 12
+lbl2.Text = "🥚 Eggs: 0"
+lbl2.TextXAlignment = Enum.TextXAlignment.Left
+local stopped = false
+local stopBtn = Instance.new("TextButton", frame)
+stopBtn.Size = UDim2.new(0,75,0,30)
+stopBtn.Position = UDim2.new(1,-80,0.5,-15)
+stopBtn.BackgroundColor3 = Color3.fromRGB(180,30,30)
+stopBtn.TextColor3 = Color3.new(1,1,1)
+stopBtn.Font = Enum.Font.GothamBold
+stopBtn.TextSize = 12
+stopBtn.Text = "STOP"
+stopBtn.BorderSizePixel = 0
+Instance.new("UICorner", stopBtn).CornerRadius = UDim.new(0,4)
+stopBtn.MouseButton1Click:Connect(function() stopped = true end)
+
+-- get bounds
+local minX, maxX, minZ, maxZ, sumY, countY = math.huge, -math.huge, math.huge, -math.huge, 0, 0
+for _, room in pairs(genBackrooms:GetChildren()) do
+    local base = room:FindFirstChild("Baseplate")
+    if base and base:IsA("BasePart") then
+        local p = base.Position
+        minX = math.min(minX, p.X - 150)
+        maxX = math.max(maxX, p.X + 150)
+        minZ = math.min(minZ, p.Z - 150)
+        maxZ = math.max(maxZ, p.Z + 150)
+        sumY = sumY + p.Y
+        countY = countY + 1
+    end
+end
+local flyY = (countY > 0 and sumY/countY or hrp.Position.Y) + 8
+
+-- PHASE 1: fly room to room (nearest neighbor)
+local function getRoomPositions()
+    local positions = {}
+    for _, room in pairs(genBackrooms:GetChildren()) do
+        local base = room:FindFirstChild("Baseplate")
+        if base and base:IsA("BasePart") then
+            table.insert(positions, base.Position)
+        end
+    end
+    return positions
+end
+
+local function sortNearest(positions, startPos)
+    local sorted = {}
+    local remaining = {table.unpack(positions)}
+    local current = startPos
+    while #remaining > 0 do
+        local nearestIdx, nearestDist = 1, math.huge
+        for i, pos in pairs(remaining) do
+            local d = (pos - current).Magnitude
+            if d < nearestDist then nearestDist = d nearestIdx = i end
+        end
+        table.insert(sorted, remaining[nearestIdx])
+        current = remaining[nearestIdx]
+        table.remove(remaining, nearestIdx)
+    end
+    return sorted
+end
+
+local roomPositions = sortNearest(getRoomPositions(), hrp.Position)
+print("Phase 1: visiting " .. #roomPositions .. " rooms")
+
+for i, pos in pairs(roomPositions) do
+    if stopped then break end
+    hrp.CFrame = CFrame.new(Vector3.new(pos.X, flyY, pos.Z))
+    task.wait(0.15) -- wait at each room to stream
+    if i % 3 == 0 then
+        lbl.Text = "🔍 Phase 1: " .. math.floor(i/#roomPositions*100) .. "% | rooms: " .. #genBackrooms:GetChildren()
+        lbl2.Text = "🥚 Eggs: " .. #found
+    end
+end
+
+-- update bounds after phase 1 (new rooms may have loaded)
+for _, room in pairs(genBackrooms:GetChildren()) do
+    local base = room:FindFirstChild("Baseplate")
+    if base and base:IsA("BasePart") then
+        local p = base.Position
+        minX = math.min(minX, p.X - 150)
+        maxX = math.max(maxX, p.X + 150)
+        minZ = math.min(minZ, p.Z - 150)
+        maxZ = math.max(maxZ, p.Z + 150)
+    end
+end
+
+-- PHASE 2: grid sweep to catch any missed rooms
+if not stopped then
+    lbl.Text = "🔍 Phase 2: Grid sweep..."
+    local stepSize = 120
+    local waypoints = {}
+    local row = 0
+    local z = minZ
+    while z <= maxZ do
+        local xStep = (row % 2 == 0) and stepSize or -stepSize
+        local xStart = (row % 2 == 0) and minX or maxX
+        local xEnd = (row % 2 == 0) and maxX or minX
+        local x = xStart
+        repeat
+            table.insert(waypoints, Vector3.new(x, flyY, z))
+            x = x + xStep
+        until (xStep > 0 and x > xEnd) or (xStep < 0 and x < xEnd)
+        z = z + stepSize
+        row = row + 1
+    end
+
+    print("Phase 2: " .. #waypoints .. " grid waypoints")
+
+    for i, wp in pairs(waypoints) do
+        if stopped then break end
+        hrp.CFrame = CFrame.new(wp)
+        task.wait(0.04)
+        if i % 10 == 0 then
+            lbl.Text = "🔍 Phase 2: " .. math.floor(i/#waypoints*100) .. "% | rooms: " .. #genBackrooms:GetChildren()
+            lbl2.Text = "🥚 Eggs: " .. #found
+        end
+    end
+end
+
+-- PHASE 3: revisit any new rooms found during grid sweep
+if not stopped then
+    lbl.Text = "🔍 Phase 3: Final pass..."
+    local newPositions = sortNearest(getRoomPositions(), hrp.Position)
+    -- only visit rooms we havent been to
+    local visited = {}
+    for _, pos in pairs(roomPositions) do
+        visited[tostring(math.floor(pos.X)) .. "_" .. tostring(math.floor(pos.Z))] = true
+    end
+    local toVisit = {}
+    for _, pos in pairs(newPositions) do
+        local key = tostring(math.floor(pos.X)) .. "_" .. tostring(math.floor(pos.Z))
+        if not visited[key] then
+            table.insert(toVisit, pos)
+        end
+    end
+    print("Phase 3: " .. #toVisit .. " new rooms to visit")
+    for i, pos in pairs(toVisit) do
+        if stopped then break end
+        hrp.CFrame = CFrame.new(Vector3.new(pos.X, flyY, pos.Z))
+        task.wait(0.15)
+    end
+end
+
+roomWatcher:Disconnect()
+noclip:Disconnect()
+hum.PlatformStand = false
+task.wait(0.8)
+
+table.sort(found, function(a,b) return a.multi < b.multi end)
+lbl.Text = "✅ Done! " .. #found .. " eggs | " .. #genBackrooms:GetChildren() .. " rooms total"
+task.wait(2)
+sg:Destroy()
+
+print("=== FINAL EGG LIST ===")
+for _, e in pairs(found) do
+    print(e.name .. " [" .. e.multi .. "x] deep=" .. tostring(e.deep))
+end
+
+-- TP UI
+local sg2 = Instance.new("ScreenGui")
+sg2.Name = "BackroomEggTP"
+sg2.ResetOnSpawn = false
+sg2.Parent = game:GetService("CoreGui")
+local main = Instance.new("Frame", sg2)
+main.Size = UDim2.new(0, 330, 0, 460)
+main.Position = UDim2.new(0.5, -165, 0.5, -230)
+main.BackgroundColor3 = Color3.fromRGB(22,22,22)
+main.BorderSizePixel = 0
+main.Active = true
+main.Draggable = true
+Instance.new("UICorner", main).CornerRadius = UDim.new(0,8)
+local titleBar = Instance.new("Frame", main)
+titleBar.Size = UDim2.new(1,0,0,38)
+titleBar.BackgroundColor3 = Color3.fromRGB(15,15,15)
+titleBar.BorderSizePixel = 0
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0,8)
+local titleLbl = Instance.new("TextLabel", titleBar)
+titleLbl.Size = UDim2.new(1,-40,1,0)
+titleLbl.Position = UDim2.new(0,10,0,0)
+titleLbl.BackgroundTransparency = 1
+titleLbl.TextColor3 = Color3.fromRGB(255,200,0)
+titleLbl.Font = Enum.Font.GothamBold
+titleLbl.TextSize = 13
+titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+titleLbl.Text = "🟡 Backroom Eggs — " .. #found .. " rooms"
+local closeBtn = Instance.new("TextButton", titleBar)
+closeBtn.Size = UDim2.new(0,28,0,28)
+closeBtn.Position = UDim2.new(1,-32,0,5)
+closeBtn.BackgroundColor3 = Color3.fromRGB(180,30,30)
+closeBtn.TextColor3 = Color3.new(1,1,1)
+closeBtn.Text = "X"
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 12
+closeBtn.BorderSizePixel = 0
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0,4)
+closeBtn.MouseButton1Click:Connect(function() sg2:Destroy() end)
+local scroll = Instance.new("ScrollingFrame", main)
+scroll.Size = UDim2.new(1,-10,1,-48)
+scroll.Position = UDim2.new(0,5,0,43)
+scroll.BackgroundTransparency = 1
+scroll.ScrollBarThickness = 4
+scroll.BorderSizePixel = 0
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.CanvasSize = UDim2.new(0,0,0,0)
+Instance.new("UIListLayout", scroll).Padding = UDim.new(0,4)
+
+if #found == 0 then
+    local empty = Instance.new("TextLabel", scroll)
+    empty.Size = UDim2.new(1,-8,0,40)
+    empty.BackgroundTransparency = 1
+    empty.TextColor3 = Color3.fromRGB(180,180,180)
+    empty.Text = "No egg rooms found"
+    empty.Font = Enum.Font.Gotham
+    empty.TextSize = 12
+end
+
+for _, egg in pairs(found) do
+    local col
+    if egg.multi >= 50 then col = Color3.fromRGB(255,60,60)
+    elseif egg.multi >= 20 then col = Color3.fromRGB(255,140,0)
+    elseif egg.multi >= 10 then col = Color3.fromRGB(255,220,0)
+    else col = Color3.fromRGB(80,210,80) end
+    local btn = Instance.new("TextButton", scroll)
+    btn.Size = UDim2.new(1,-8,0,44)
+    btn.BackgroundColor3 = Color3.fromRGB(38,38,38)
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.BorderSizePixel = 0
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 12
+    btn.Text = "    " .. egg.name .. (egg.deep and "  🔵" or "")
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0,5)
+    local accent = Instance.new("Frame", btn)
+    accent.Size = UDim2.new(0,5,1,0)
+    accent.BackgroundColor3 = col
+    accent.BorderSizePixel = 0
+    Instance.new("UICorner", accent).CornerRadius = UDim.new(0,4)
+    local multiTag = Instance.new("TextLabel", btn)
+    multiTag.Size = UDim2.new(0,55,1,0)
+    multiTag.Position = UDim2.new(1,-60,0,0)
+    multiTag.BackgroundTransparency = 1
+    multiTag.TextColor3 = col
+    multiTag.Font = Enum.Font.GothamBold
+    multiTag.TextSize = 14
+    multiTag.Text = egg.multi .. "x"
+    btn.MouseButton1Click:Connect(function()
+        local c = lp.Character
+        if not c or not c:FindFirstChild("HumanoidRootPart") then return end
+        local freshEggModel = egg.room:FindFirstChild("EggModel", true)
+        local freshPart = freshEggModel and freshEggModel:FindFirstChildWhichIsA("BasePart")
+        local target = freshPart or egg.part
+        if not target or not target.Parent then
+            btn.Text = "    [GONE] " .. egg.name
+            btn.BackgroundColor3 = Color3.fromRGB(60,20,20)
+            return
+        end
+        c.HumanoidRootPart.CFrame = target.CFrame + Vector3.new(0,5,0)
+        btn.BackgroundColor3 = Color3.fromRGB(20,60,20)
+        task.delay(1.5, function() btn.BackgroundColor3 = Color3.fromRGB(38,38,38) end)
+    end)
+end
