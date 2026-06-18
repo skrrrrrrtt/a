@@ -1,0 +1,192 @@
+-- CONFIG
+local STEP = 80
+local SCAN_RADIUS = 200
+local FLY_Y_OFFSET = 150
+local FLY_SPEED = 600
+local SCAN_INTERVAL = 0.1
+local PAD = 60
+
+-- REFS
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local lp = Players.LocalPlayer
+local hrp = lp.Character and lp.Character:WaitForChild("HumanoidRootPart")
+local root = workspace.__THINGS.__INSTANCE_CONTAINER.Active.Backrooms.GeneratedBackrooms
+
+-- Disable physics
+local humanoid = lp.Character:FindFirstChildOfClass("Humanoid")
+humanoid.PlatformStand = true
+hrp.Anchored = true
+
+-- ============================================================
+-- STEP 1: Teleport to backroom center first, wait for load
+-- ============================================================
+local function getRoughCenter()
+    local sum = Vector3.new(0, 0, 0)
+    local count = 0
+    for _, v in ipairs(root:GetChildren()) do
+        local part = v:FindFirstChildWhichIsA("BasePart", true)
+        if part then
+            sum += part.Position
+            count += 1
+        end
+    end
+    if count == 0 then return Vector3.new(0, 1600, 0) end
+    return sum / count
+end
+
+print("[Scanner] Teleporting to backroom center to trigger chunk load...")
+local center = getRoughCenter()
+hrp.CFrame = CFrame.new(center.X, center.Y + 200, center.Z)
+
+print("[Scanner] Waiting 5s for chunks to load...")
+task.wait(5)
+
+-- Measure bounds
+print("[Scanner] Measuring backroom bounds...")
+local min = Vector3.new(math.huge, math.huge, math.huge)
+local max = Vector3.new(-math.huge, -math.huge, -math.huge)
+
+for _, v in ipairs(root:GetDescendants()) do
+    if v:IsA("BasePart") then
+        local p = v.Position
+        local s = v.Size / 2
+        min = Vector3.new(math.min(min.X, p.X - s.X), math.min(min.Y, p.Y - s.Y), math.min(min.Z, p.Z - s.Z))
+        max = Vector3.new(math.max(max.X, p.X + s.X), math.max(max.Y, p.Y + s.Y), math.max(max.Z, p.Z + s.Z))
+    end
+end
+
+-- Sanity check
+if min.X == math.huge then
+    warn("[Scanner] No parts found in root! Using fallback bounds.")
+    min = Vector3.new(-5412, 1500, -2442)
+    max = Vector3.new(-3724, 1600, -934)
+end
+
+min = min - Vector3.new(PAD, 0, PAD)
+max = max + Vector3.new(PAD, 0, PAD)
+
+local FLY_Y = max.Y + FLY_Y_OFFSET
+
+print(string.format("[Scanner] Bounds: (%.0f, %.0f) → (%.0f, %.0f)", min.X, min.Z, max.X, max.Z))
+print(string.format("[Scanner] Size: %.0f x %.0f | Flying at Y=%.0f", max.X - min.X, max.Z - min.Z, FLY_Y))
+
+-- ============================================================
+-- STEP 2: Egg helpers
+-- ============================================================
+local function getEggType(room)
+    if room:FindFirstChild("smile_08", true) then return "Backrooms Smile Egg"
+    elseif room:FindFirstChild("flower_02", true) then return "Backrooms Flower Egg"
+    elseif room:FindFirstChild("scribble_02", true) then return "Backrooms Scribble Egg"
+    elseif room:FindFirstChild("spiral", true) then return "Backrooms Swirl Egg"
+    end
+    return "Unknown Egg"
+end
+
+local found = {}
+local scannedCount = 0
+
+local function scanNearbyRooms()
+    local pos = hrp.Position
+    for _, room in ipairs(root:GetChildren()) do
+        if room:GetAttribute("EggMultiplier") then
+            local part = room:FindFirstChildWhichIsA("BasePart", true)
+            if part then
+                local flat = Vector2.new(part.Position.X - pos.X, part.Position.Z - pos.Z).Magnitude
+                if flat <= SCAN_RADIUS then
+                    local mult = room:GetAttribute("EggMultiplier")
+                    local eggType = getEggType(room)
+                    local key = eggType .. " " .. tostring(mult) .. "x"
+                    if not found[key] then
+                        found[key] = true
+                        scannedCount += 1
+                        print(string.format("[Scanner] #%d Found: %s (%.0f studs away)", scannedCount, key, flat))
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- ============================================================
+-- STEP 3: Build snake path waypoints
+-- ============================================================
+print("[Scanner] Building flight path...")
+local waypoints = {}
+local rowIndex = 0
+
+for x = min.X, max.X, STEP do
+    local zStart, zEnd, zStep
+    if rowIndex % 2 == 0 then
+        zStart, zEnd, zStep = min.Z, max.Z, STEP
+    else
+        zStart, zEnd, zStep = max.Z, min.Z, -STEP
+    end
+    for z = zStart, zEnd, zStep do
+        table.insert(waypoints, Vector3.new(x, FLY_Y, z))
+    end
+    rowIndex += 1
+end
+
+print(string.format("[Scanner] %d waypoints. Starting flight...", #waypoints))
+
+-- ============================================================
+-- STEP 4: Fly + scan
+-- ============================================================
+local waypointIndex = 1
+local lastScan = 0
+local done = false
+local lastProgress = -1
+
+local conn = RunService.Heartbeat:Connect(function(dt)
+    if done or waypointIndex > #waypoints then
+        done = true
+        return
+    end
+
+    local target = waypoints[waypointIndex]
+    local current = hrp.Position
+    local direction = (target - current)
+    local dist = direction.Magnitude
+    local moveStep = FLY_SPEED * dt
+
+    if dist <= moveStep then
+        hrp.CFrame = CFrame.new(target)
+        waypointIndex += 1
+        local progress = math.floor((waypointIndex / #waypoints) * 100)
+        if progress % 10 == 0 and progress ~= lastProgress then
+            lastProgress = progress
+            print(string.format("[Scanner] Progress: %d%% | Eggs found: %d", progress, scannedCount))
+        end
+    else
+        local newPos = current + direction.Unit * moveStep
+        hrp.CFrame = CFrame.new(newPos, newPos + direction.Unit)
+    end
+
+    local now = tick()
+    if now - lastScan >= SCAN_INTERVAL then
+        scanNearbyRooms()
+        lastScan = now
+    end
+end)
+
+repeat task.wait(0.5) until done
+conn:Disconnect()
+
+-- Restore physics
+hrp.Anchored = false
+humanoid.PlatformStand = false
+
+-- ============================================================
+-- STEP 5: Output
+-- ============================================================
+local out = {}
+for k in pairs(found) do table.insert(out, k) end
+table.sort(out)
+
+local result = table.concat(out, "\n")
+if result == "" then result = "No eggs found." end
+
+setclipboard(result)
+print(string.format("[Scanner] Done! %d unique eggs found. Results copied to clipboard.", #out))
+print(result)
