@@ -17,12 +17,12 @@ local humanoid = lp.Character:FindFirstChildOfClass("Humanoid")
 humanoid.PlatformStand = true
 hrp.Anchored = true
 
--- STEP 1: Detect map bounds
-print("[Scanner] Detecting map bounds...")
+-- STEP 1: Detect BACKROOM bounds only
+print("[Scanner] Detecting backroom bounds...")
 local min = Vector3.new(math.huge, math.huge, math.huge)
 local max = Vector3.new(-math.huge, -math.huge, -math.huge)
 
-for _, v in ipairs(workspace:GetDescendants()) do
+for _, v in ipairs(root:GetDescendants()) do  -- root instead of workspace
     if v:IsA("BasePart") then
         local p = v.Position
         local s = v.Size / 2
