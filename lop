@@ -1,0 +1,282 @@
+-- CONFIG
+local STEP = 80
+local SCAN_RADIUS = 200
+local FLY_Y_OFFSET = 150
+local FLY_SPEED = 600
+local SCAN_INTERVAL = 0.1
+local PAD = 60
+local INTERACT_RANGE = 15
+local POLL_INTERVAL = 0.5
+
+-- REFS
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local lp = Players.LocalPlayer
+local hrp = lp.Character and lp.Character:WaitForChild("HumanoidRootPart")
+local root = workspace.__THINGS.__INSTANCE_CONTAINER.Active.Backrooms.GeneratedBackrooms
+local BreakableCmds = require(game.ReplicatedStorage.Library.Client.BreakableCmds)
+
+-- Disable physics
+local humanoid = lp.Character:FindFirstChildOfClass("Humanoid")
+humanoid.PlatformStand = true
+hrp.Anchored = true
+
+-- ============================================================
+-- STEP 1: Teleport to backroom center, wait for load
+-- ============================================================
+local function getRoughCenter()
+    local sum = Vector3.new(0, 0, 0)
+    local count = 0
+    for _, v in ipairs(root:GetChildren()) do
+        local part = v:FindFirstChildWhichIsA("BasePart", true)
+        if part then
+            sum += part.Position
+            count += 1
+        end
+    end
+    if count == 0 then return Vector3.new(0, 1600, 0) end
+    return sum / count
+end
+
+print("[Scanner] Teleporting to backroom center to trigger chunk load...")
+local center = getRoughCenter()
+hrp.CFrame = CFrame.new(center.X, center.Y + 200, center.Z)
+
+print("[Scanner] Waiting 5s for chunks to load...")
+task.wait(5)
+
+-- Measure bounds
+print("[Scanner] Measuring backroom bounds...")
+local bMin = Vector3.new(math.huge, math.huge, math.huge)
+local bMax = Vector3.new(-math.huge, -math.huge, -math.huge)
+
+for _, v in ipairs(root:GetDescendants()) do
+    if v:IsA("BasePart") then
+        local p = v.Position
+        local s = v.Size / 2
+        bMin = Vector3.new(math.min(bMin.X, p.X - s.X), math.min(bMin.Y, p.Y - s.Y), math.min(bMin.Z, p.Z - s.Z))
+        bMax = Vector3.new(math.max(bMax.X, p.X + s.X), math.max(bMax.Y, p.Y + s.Y), math.max(bMax.Z, p.Z + s.Z))
+    end
+end
+
+if bMin.X == math.huge then
+    warn("[Scanner] No parts found in root! Using fallback bounds.")
+    bMin = Vector3.new(-5412, 1500, -2442)
+    bMax = Vector3.new(-3724, 1600, -934)
+end
+
+bMin = bMin - Vector3.new(PAD, 0, PAD)
+bMax = bMax + Vector3.new(PAD, 0, PAD)
+
+local FLY_Y = bMax.Y + FLY_Y_OFFSET
+
+print(string.format("[Scanner] Bounds: (%.0f, %.0f) → (%.0f, %.0f)", bMin.X, bMin.Z, bMax.X, bMax.Z))
+print(string.format("[Scanner] Size: %.0f x %.0f | Flying at Y=%.0f", bMax.X - bMin.X, bMax.Z - bMin.Z, FLY_Y))
+
+-- ============================================================
+-- STEP 2: Scan helpers
+-- ============================================================
+local function getEggType(room)
+    if room:FindFirstChild("smile_08", true) then return "Backrooms Smile Egg"
+    elseif room:FindFirstChild("flower_02", true) then return "Backrooms Flower Egg"
+    elseif room:FindFirstChild("scribble_02", true) then return "Backrooms Scribble Egg"
+    elseif room:FindFirstChild("spiral", true) then return "Backrooms Swirl Egg"
+    end
+    return "Unknown Egg"
+end
+
+local foundEggs = {}
+local foundBossRooms = {}
+local eggCount = 0
+local bossCount = 0
+
+local function scanNearbyRooms()
+    local pos = hrp.Position
+    for _, room in ipairs(root:GetChildren()) do
+        local part = room:FindFirstChildWhichIsA("BasePart", true)
+        if not part then continue end
+
+        local flat = Vector2.new(part.Position.X - pos.X, part.Position.Z - pos.Z).Magnitude
+        if flat > SCAN_RADIUS then continue end
+
+        -- Egg scan
+        if room:GetAttribute("EggMultiplier") then
+            local mult = room:GetAttribute("EggMultiplier")
+            local eggType = getEggType(room)
+            local key = eggType .. " " .. tostring(mult) .. "x"
+            if not foundEggs[key] then
+                foundEggs[key] = true
+                eggCount += 1
+                print(string.format("[Scanner] Egg #%d: %s (%.0f studs)", eggCount, key, flat))
+            end
+        end
+
+        -- MiniBossRoom scan — check by Name since the model is literally called "MiniBossRoom"
+        if room.Name == "MiniBossRoom" and not foundBossRooms[room] then
+            local chestUID = room:GetAttribute("BossChestUID")
+            foundBossRooms[room] = {
+                room = room,
+                position = part.Position,
+                uid = chestUID
+            }
+            bossCount += 1
+            print(string.format("[Scanner] MiniBoss Room #%d found at (%.0f, %.0f, %.0f) | UID: %s",
+                bossCount, part.Position.X, part.Position.Y, part.Position.Z, tostring(chestUID)))
+        end
+    end
+end
+
+-- ============================================================
+-- STEP 3: Build snake path waypoints
+-- ============================================================
+print("[Scanner] Building flight path...")
+local waypoints = {}
+local rowIndex = 0
+
+for x = bMin.X, bMax.X, STEP do
+    local zStart, zEnd, zStep
+    if rowIndex % 2 == 0 then
+        zStart, zEnd, zStep = bMin.Z, bMax.Z, STEP
+    else
+        zStart, zEnd, zStep = bMax.Z, bMin.Z, -STEP
+    end
+    for z = zStart, zEnd, zStep do
+        table.insert(waypoints, Vector3.new(x, FLY_Y, z))
+    end
+    rowIndex += 1
+end
+
+print(string.format("[Scanner] %d waypoints. Starting flight...", #waypoints))
+
+-- ============================================================
+-- STEP 4: Fly + scan
+-- ============================================================
+local waypointIndex = 1
+local lastScan = 0
+local done = false
+local lastProgress = -1
+
+local conn = RunService.Heartbeat:Connect(function(dt)
+    if done or waypointIndex > #waypoints then
+        done = true
+        return
+    end
+
+    local target = waypoints[waypointIndex]
+    local current = hrp.Position
+    local direction = (target - current)
+    local dist = direction.Magnitude
+    local moveStep = FLY_SPEED * dt
+
+    if dist <= moveStep then
+        hrp.CFrame = CFrame.new(target)
+        waypointIndex += 1
+        local progress = math.floor((waypointIndex / #waypoints) * 100)
+        if progress % 10 == 0 and progress ~= lastProgress then
+            lastProgress = progress
+            print(string.format("[Scanner] Progress: %d%% | Eggs: %d | Boss Rooms: %d", progress, eggCount, bossCount))
+        end
+    else
+        local newPos = current + direction.Unit * moveStep
+        hrp.CFrame = CFrame.new(newPos, newPos + direction.Unit)
+    end
+
+    local now = tick()
+    if now - lastScan >= SCAN_INTERVAL then
+        scanNearbyRooms()
+        lastScan = now
+    end
+end)
+
+repeat task.wait(0.5) until done
+conn:Disconnect()
+
+print(string.format("[Scanner] Scan complete! Eggs: %d | Boss Rooms: %d", eggCount, bossCount))
+
+-- ============================================================
+-- STEP 5: Egg results to clipboard
+-- ============================================================
+local out = {}
+for k in pairs(foundEggs) do table.insert(out, k) end
+table.sort(out)
+
+local result = table.concat(out, "\n")
+if result == "" then result = "No eggs found." end
+setclipboard(result)
+print("[Scanner] Egg results copied to clipboard:\n" .. result)
+
+-- ============================================================
+-- STEP 6: Handle MiniBoss rooms
+-- ============================================================
+if bossCount == 0 then
+    print("[Chest] No MiniBossRooms found in this backroom.")
+    hrp.Anchored = false
+    humanoid.PlatformStand = false
+    return
+end
+
+-- Restore physics for walking
+hrp.Anchored = false
+humanoid.PlatformStand = false
+
+for _, data in pairs(foundBossRooms) do
+    local bossRoom = data.room
+    local chestUID = data.uid
+
+    print(string.format("[Chest] Going to MiniBossRoom at (%.0f, %.0f, %.0f)", data.position.X, data.position.Y, data.position.Z))
+
+    -- Walk to room
+    humanoid:MoveTo(Vector3.new(data.position.X, data.position.Y, data.position.Z))
+    humanoid.MoveToFinished:Wait()
+
+    -- If no UID yet, wait for server to assign it
+    if not chestUID then
+        print("[Chest] Waiting for BossChestUID to be assigned...")
+        repeat
+            task.wait(POLL_INTERVAL)
+            chestUID = bossRoom:GetAttribute("BossChestUID")
+        until chestUID ~= nil
+        print("[Chest] BossChestUID assigned: " .. tostring(chestUID))
+    end
+
+    -- Wait for boss to be defeated
+    print("[Chest] Waiting for boss to be defeated...")
+    repeat task.wait(POLL_INTERVAL) until bossRoom:GetAttribute("BossDefeatedAt") ~= nil
+    print("[Chest] Boss defeated!")
+
+    -- Get chest object
+    local chest = BreakableCmds.Get(chestUID)
+    if not chest then
+        warn("[Chest] Chest not found via BreakableCmds, skipping.")
+        continue
+    end
+
+    local chestPos = chest:GetPivot().Position
+    print("[Chest] Walking to chest at " .. tostring(chestPos))
+    humanoid:MoveTo(chestPos)
+    humanoid.MoveToFinished:Wait()
+
+    -- Wait until in range
+    repeat task.wait(0.1) until (hrp.Position - chestPos).Magnitude <= INTERACT_RANGE
+
+    -- Interact — use remote spy to confirm the real remote name
+    local interactRemote = game.ReplicatedStorage:FindFirstChild("BreakableInteract", true)
+        or game.ReplicatedStorage:FindFirstChild("Interact", true)
+
+    if interactRemote and interactRemote:IsA("RemoteEvent") then
+        interactRemote:FireServer(chestUID)
+        print("[Chest] Interact remote fired!")
+    else
+        local prompt = chest:FindFirstChildOfClass("ProximityPrompt", true)
+        if prompt then
+            fireproximityprompt(prompt)
+            print("[Chest] ProximityPrompt fired!")
+        else
+            warn("[Chest] No interact method found — spy the remote when you manually open a chest and swap it in.")
+        end
+    end
+
+    task.wait(1)
+end
+
+print("[Chest] All MiniBossRooms handled!")
