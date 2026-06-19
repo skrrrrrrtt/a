@@ -1,0 +1,635 @@
+-- CONFIG
+local STEP = 80
+local FLY_Y_OFFSET = 10        -- just above floor, not above roof
+local FLY_SPEED = 600
+local SCAN_INTERVAL = 0.1
+local PAD = 60
+local INTERACT_RANGE = 12
+local POLL_INTERVAL = 0.5
+
+-- REFS
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local lp = Players.LocalPlayer
+local hrp = lp.Character and lp.Character:WaitForChild("HumanoidRootPart")
+local root = workspace.__THINGS.__INSTANCE_CONTAINER.Active.Backrooms.GeneratedBackrooms
+local BreakableCmds = require(game.ReplicatedStorage.Library.Client.BreakableCmds)
+
+-- Disable physics
+local humanoid = lp.Character:FindFirstChildOfClass("Humanoid")
+humanoid.PlatformStand = true
+hrp.Anchored = true
+
+-- ============================================================
+-- UI SETUP
+-- ============================================================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "BackroomScannerUI"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = lp.PlayerGui
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0, 340, 0, 480)
+mainFrame.Position = UDim2.new(0.5, -170, 0.5, -240)
+mainFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 15)
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Parent = screenGui
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 8)
+
+local mainStroke = Instance.new("UIStroke", mainFrame)
+mainStroke.Color = Color3.fromRGB(80, 40, 120)
+mainStroke.Thickness = 1.5
+
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 40)
+header.BackgroundColor3 = Color3.fromRGB(25, 10, 40)
+header.BorderSizePixel = 0
+header.Parent = mainFrame
+Instance.new("UICorner", header).CornerRadius = UDim.new(0, 8)
+
+local headerFix = Instance.new("Frame")
+headerFix.Size = UDim2.new(1, 0, 0.5, 0)
+headerFix.Position = UDim2.new(0, 0, 0.5, 0)
+headerFix.BackgroundColor3 = Color3.fromRGB(25, 10, 40)
+headerFix.BorderSizePixel = 0
+headerFix.Parent = header
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, -80, 1, 0)
+titleLabel.Position = UDim2.new(0, 12, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "⬡  BACKROOM SCANNER"
+titleLabel.TextColor3 = Color3.fromRGB(180, 100, 255)
+titleLabel.TextSize = 13
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = header
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 28, 0, 28)
+closeBtn.Position = UDim2.new(1, -34, 0.5, -14)
+closeBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 60)
+closeBtn.Text = "✕"
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.TextSize = 13
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.BorderSizePixel = 0
+closeBtn.Parent = header
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+closeBtn.MouseButton1Click:Connect(function() screenGui:Destroy() end)
+
+local statusBar = Instance.new("Frame")
+statusBar.Size = UDim2.new(1, -16, 0, 32)
+statusBar.Position = UDim2.new(0, 8, 0, 48)
+statusBar.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+statusBar.BorderSizePixel = 0
+statusBar.Parent = mainFrame
+Instance.new("UICorner", statusBar).CornerRadius = UDim.new(0, 6)
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -10, 1, 0)
+statusLabel.Position = UDim2.new(0, 8, 0, 0)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = "⟳  Initializing..."
+statusLabel.TextColor3 = Color3.fromRGB(160, 160, 180)
+statusLabel.TextSize = 11
+statusLabel.Font = Enum.Font.Gotham
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.Parent = statusBar
+
+local progressBg = Instance.new("Frame")
+progressBg.Size = UDim2.new(1, -16, 0, 4)
+progressBg.Position = UDim2.new(0, 8, 0, 88)
+progressBg.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
+progressBg.BorderSizePixel = 0
+progressBg.Parent = mainFrame
+Instance.new("UICorner", progressBg).CornerRadius = UDim.new(0, 2)
+
+local progressFill = Instance.new("Frame")
+progressFill.Size = UDim2.new(0, 0, 1, 0)
+progressFill.BackgroundColor3 = Color3.fromRGB(140, 60, 220)
+progressFill.BorderSizePixel = 0
+progressFill.Parent = progressBg
+Instance.new("UICorner", progressFill).CornerRadius = UDim.new(0, 2)
+
+local tabFrame = Instance.new("Frame")
+tabFrame.Size = UDim2.new(1, -16, 0, 28)
+tabFrame.Position = UDim2.new(0, 8, 0, 100)
+tabFrame.BackgroundTransparency = 1
+tabFrame.Parent = mainFrame
+
+local tabLayout = Instance.new("UIListLayout", tabFrame)
+tabLayout.FillDirection = Enum.FillDirection.Horizontal
+tabLayout.SortOrder = Enum.SortOrder.LayoutOrder
+tabLayout.Padding = UDim.new(0, 6)
+
+local function makeTab(label, order)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0.5, -3, 1, 0)
+    btn.BackgroundColor3 = Color3.fromRGB(30, 15, 50)
+    btn.Text = label
+    btn.TextColor3 = Color3.fromRGB(130, 90, 180)
+    btn.TextSize = 11
+    btn.Font = Enum.Font.GothamBold
+    btn.BorderSizePixel = 0
+    btn.LayoutOrder = order
+    btn.Parent = tabFrame
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    return btn
+end
+
+local tabEggs = makeTab("🥚  EGGS", 1)
+local tabBoss = makeTab("💀  BOSS ROOMS", 2)
+
+local scrollFrame = Instance.new("ScrollingFrame")
+scrollFrame.Size = UDim2.new(1, -16, 1, -200)
+scrollFrame.Position = UDim2.new(0, 8, 0, 136)
+scrollFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 22)
+scrollFrame.BorderSizePixel = 0
+scrollFrame.ScrollBarThickness = 4
+scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 50, 160)
+scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+scrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scrollFrame.Parent = mainFrame
+Instance.new("UICorner", scrollFrame).CornerRadius = UDim.new(0, 6)
+
+local listLayout = Instance.new("UIListLayout", scrollFrame)
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Padding = UDim.new(0, 4)
+
+local listPad = Instance.new("UIPadding", scrollFrame)
+listPad.PaddingTop = UDim.new(0, 6)
+listPad.PaddingLeft = UDim.new(0, 6)
+listPad.PaddingRight = UDim.new(0, 6)
+
+local counterBar = Instance.new("Frame")
+counterBar.Size = UDim2.new(1, -16, 0, 28)
+counterBar.Position = UDim2.new(0, 8, 1, -36)
+counterBar.BackgroundColor3 = Color3.fromRGB(20, 10, 32)
+counterBar.BorderSizePixel = 0
+counterBar.Parent = mainFrame
+Instance.new("UICorner", counterBar).CornerRadius = UDim.new(0, 6)
+
+local counterLabel = Instance.new("TextLabel")
+counterLabel.Size = UDim2.new(1, -10, 1, 0)
+counterLabel.Position = UDim2.new(0, 8, 0, 0)
+counterLabel.BackgroundTransparency = 1
+counterLabel.Text = "Eggs: 0  |  Boss Rooms: 0"
+counterLabel.TextColor3 = Color3.fromRGB(120, 80, 180)
+counterLabel.TextSize = 11
+counterLabel.Font = Enum.Font.GothamBold
+counterLabel.TextXAlignment = Enum.TextXAlignment.Left
+counterLabel.Parent = counterBar
+
+-- ============================================================
+-- DRAG
+-- ============================================================
+local dragging, dragStart, startPos
+header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = input.Position
+        startPos = mainFrame.Position
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local delta = input.Position - dragStart
+        mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = false
+    end
+end)
+
+-- ============================================================
+-- UI HELPERS
+-- ============================================================
+local currentTab = "eggs"
+local eggEntries = {}
+local bossEntries = {}
+
+local function setStatus(text, color)
+    statusLabel.Text = text
+    statusLabel.TextColor3 = color or Color3.fromRGB(160, 160, 180)
+end
+
+local function setProgress(pct)
+    TweenService:Create(progressFill, TweenInfo.new(0.2), {
+        Size = UDim2.new(pct, 0, 1, 0)
+    }):Play()
+    progressFill.BackgroundColor3 = pct >= 1
+        and Color3.fromRGB(60, 200, 100)
+        or Color3.fromRGB(140, 60, 220)
+end
+
+local function updateCounter(eggs, boss)
+    counterLabel.Text = string.format("🥚 Eggs: %d   |   💀 Boss Rooms: %d", eggs, boss)
+end
+
+local function clearList()
+    for _, c in ipairs(scrollFrame:GetChildren()) do
+        if c:IsA("Frame") then c:Destroy() end
+    end
+end
+
+local function showTab(tab)
+    currentTab = tab
+    clearList()
+
+    local activeColor = Color3.fromRGB(140, 60, 220)
+    local inactiveColor = Color3.fromRGB(30, 15, 50)
+    local activeText = Color3.fromRGB(220, 180, 255)
+    local inactiveText = Color3.fromRGB(100, 70, 140)
+
+    tabEggs.BackgroundColor3 = tab == "eggs" and activeColor or inactiveColor
+    tabEggs.TextColor3 = tab == "eggs" and activeText or inactiveText
+    tabBoss.BackgroundColor3 = tab == "boss" and activeColor or inactiveColor
+    tabBoss.TextColor3 = tab == "boss" and activeText or inactiveText
+
+    local entries = tab == "eggs" and eggEntries or bossEntries
+    for i, entry in ipairs(entries) do
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, 0, 0, 48)
+        row.BackgroundColor3 = i % 2 == 0
+            and Color3.fromRGB(18, 18, 28)
+            or Color3.fromRGB(22, 12, 35)
+        row.BorderSizePixel = 0
+        row.LayoutOrder = i
+        row.Parent = scrollFrame
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 5)
+
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, -80, 0.5, 0)
+        label.Position = UDim2.new(0, 10, 0, 2)
+        label.BackgroundTransparency = 1
+        label.Text = entry.title
+        label.TextColor3 = Color3.fromRGB(210, 180, 255)
+        label.TextSize = 11
+        label.Font = Enum.Font.GothamBold
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.TextTruncate = Enum.TextTruncate.AtEnd
+        label.Parent = row
+
+        local sub = Instance.new("TextLabel")
+        sub.Size = UDim2.new(1, -80, 0.5, 0)
+        sub.Position = UDim2.new(0, 10, 0.5, -2)
+        sub.BackgroundTransparency = 1
+        sub.Text = entry.sub
+        sub.TextColor3 = Color3.fromRGB(100, 80, 130)
+        sub.TextSize = 10
+        sub.Font = Enum.Font.Gotham
+        sub.TextXAlignment = Enum.TextXAlignment.Left
+        sub.Parent = row
+
+        local tpBtn = Instance.new("TextButton")
+        tpBtn.Size = UDim2.new(0, 64, 0, 28)
+        tpBtn.Position = UDim2.new(1, -70, 0.5, -14)
+        tpBtn.BackgroundColor3 = Color3.fromRGB(60, 30, 100)
+        tpBtn.Text = "⟶ TP"
+        tpBtn.TextColor3 = Color3.fromRGB(200, 160, 255)
+        tpBtn.TextSize = 11
+        tpBtn.Font = Enum.Font.GothamBold
+        tpBtn.BorderSizePixel = 0
+        tpBtn.Parent = row
+        Instance.new("UICorner", tpBtn).CornerRadius = UDim.new(0, 6)
+
+        tpBtn.MouseButton1Click:Connect(function()
+            tpBtn.BackgroundColor3 = Color3.fromRGB(100, 50, 180)
+            tpBtn.Text = "✓ GO"
+            task.delay(0.8, function()
+                if tpBtn.Parent then
+                    tpBtn.BackgroundColor3 = Color3.fromRGB(60, 30, 100)
+                    tpBtn.Text = "⟶ TP"
+                end
+            end)
+            local pos = entry.position
+            if pos then
+                hrp.CFrame = CFrame.new(pos.X, pos.Y + 5, pos.Z)
+                setStatus("⟶  Teleported to " .. entry.title, Color3.fromRGB(100, 220, 140))
+            end
+        end)
+
+        tpBtn.MouseEnter:Connect(function()
+            tpBtn.BackgroundColor3 = Color3.fromRGB(90, 45, 150)
+        end)
+        tpBtn.MouseLeave:Connect(function()
+            tpBtn.BackgroundColor3 = Color3.fromRGB(60, 30, 100)
+        end)
+    end
+
+    if #entries == 0 then
+        local empty = Instance.new("TextLabel")
+        empty.Size = UDim2.new(1, 0, 0, 40)
+        empty.BackgroundTransparency = 1
+        empty.Text = "Nothing found yet..."
+        empty.TextColor3 = Color3.fromRGB(80, 60, 100)
+        empty.TextSize = 11
+        empty.Font = Enum.Font.Gotham
+        empty.Parent = scrollFrame
+    end
+end
+
+tabEggs.MouseButton1Click:Connect(function() showTab("eggs") end)
+tabBoss.MouseButton1Click:Connect(function() showTab("boss") end)
+showTab("eggs")
+
+-- ============================================================
+-- STEP 1: Center + load
+-- ============================================================
+local function getRoughCenter()
+    local sum = Vector3.new(0, 0, 0)
+    local count = 0
+    for _, v in ipairs(root:GetChildren()) do
+        local part = v:FindFirstChildWhichIsA("BasePart", true)
+        if part then
+            sum += part.Position
+            count += 1
+        end
+    end
+    if count == 0 then return Vector3.new(0, 1600, 0) end
+    return sum / count
+end
+
+setStatus("⟳  Teleporting to center...", Color3.fromRGB(160, 120, 220))
+local center = getRoughCenter()
+hrp.CFrame = CFrame.new(center.X, center.Y + 5, center.Z)
+
+setStatus("⟳  Waiting for chunks to load...", Color3.fromRGB(160, 120, 220))
+task.wait(5)
+
+-- ============================================================
+-- STEP 2: Measure bounds from root only
+-- ============================================================
+setStatus("⟳  Measuring bounds...", Color3.fromRGB(160, 120, 220))
+
+local bMin = Vector3.new(math.huge, math.huge, math.huge)
+local bMax = Vector3.new(-math.huge, -math.huge, -math.huge)
+
+for _, v in ipairs(root:GetDescendants()) do
+    if v:IsA("BasePart") then
+        local p = v.Position
+        local s = v.Size / 2
+        bMin = Vector3.new(math.min(bMin.X, p.X - s.X), math.min(bMin.Y, p.Y - s.Y), math.min(bMin.Z, p.Z - s.Z))
+        bMax = Vector3.new(math.max(bMax.X, p.X + s.X), math.max(bMax.Y, p.Y + s.Y), math.max(bMax.Z, p.Z + s.Z))
+    end
+end
+
+if bMin.X == math.huge then
+    warn("[Scanner] Fallback bounds used.")
+    bMin = Vector3.new(-5412, 1500, -2442)
+    bMax = Vector3.new(-3724, 1600, -934)
+end
+
+bMin = bMin - Vector3.new(PAD, 0, PAD)
+bMax = bMax + Vector3.new(PAD, 0, PAD)
+
+-- Fly at floor level so streaming loads rooms properly
+local FLY_Y = bMin.Y + FLY_Y_OFFSET
+
+print(string.format("[Scanner] Bounds: (%.0f,%.0f)→(%.0f,%.0f) | Floor Y=%.0f", bMin.X, bMin.Z, bMax.X, bMax.Z, FLY_Y))
+
+-- ============================================================
+-- STEP 3: Egg + boss helpers
+-- ============================================================
+local function getEggType(room)
+    if room:FindFirstChild("smile_08", true) then return "Backrooms Smile Egg"
+    elseif room:FindFirstChild("flower_02", true) then return "Backrooms Flower Egg"
+    elseif room:FindFirstChild("scribble_02", true) then return "Backrooms Scribble Egg"
+    elseif room:FindFirstChild("spiral", true) then return "Backrooms Swirl Egg"
+    end
+    return "Unknown Egg"
+end
+
+local foundEggs = {}
+local foundBossRooms = {}
+local eggCount = 0
+local bossCount = 0
+
+-- NO distance filter — scan every single room in root every tick
+local function scanAllRooms()
+    for _, room in ipairs(root:GetChildren()) do
+
+        -- Egg scan
+        if room:GetAttribute("EggMultiplier") then
+            local mult = room:GetAttribute("EggMultiplier")
+            local eggType = getEggType(room)
+            local key = eggType .. " " .. tostring(mult) .. "x"
+            if not foundEggs[key] then
+                foundEggs[key] = true
+                eggCount += 1
+                local part = room:FindFirstChildWhichIsA("BasePart", true)
+                local pos = part and part.Position or Vector3.new(0, 0, 0)
+                table.insert(eggEntries, {
+                    title = key,
+                    sub = string.format("%.0fx mult  •  (%.0f, %.0f, %.0f)", mult, pos.X, pos.Y, pos.Z),
+                    position = pos
+                })
+                if currentTab == "eggs" then showTab("eggs") end
+                updateCounter(eggCount, bossCount)
+                print(string.format("[Scanner] Egg #%d: %s", eggCount, key))
+            end
+        end
+
+        -- MiniBoss scan
+        if room.Name == "MiniBossRoom" and not foundBossRooms[room] then
+            local breakZone = room:FindFirstChild("BREAK_ZONE", true)
+            local part = room:FindFirstChildWhichIsA("BasePart", true)
+            local breakPos = breakZone and breakZone.Position or (part and part.Position or Vector3.new(0,0,0))
+            local chestUID = room:GetAttribute("BossChestUID")
+            local respawnTS = room:GetAttribute("RespawnTimestamp")
+            local defeated = room:GetAttribute("BossDefeatedAt")
+            local serverTime = workspace:GetServerTimeNow()
+            local onRespawn = respawnTS and respawnTS > serverTime
+            local roomStatus = defeated and "DEFEATED"
+                or onRespawn and string.format("RESPAWN %.0fs", respawnTS - serverTime)
+                or "ACTIVE"
+
+            foundBossRooms[room] = {
+                room = room,
+                position = part and part.Position or breakPos,
+                breakPos = breakPos,
+                uid = chestUID,
+                defeated = defeated ~= nil,
+                respawnTS = respawnTS
+            }
+            bossCount += 1
+
+            table.insert(bossEntries, {
+                title = string.format("MiniBoss #%d  [%s]", bossCount, roomStatus),
+                sub = string.format("UID: %s  •  (%.0f, %.0f, %.0f)", tostring(chestUID), breakPos.X, breakPos.Y, breakPos.Z),
+                position = breakPos
+            })
+            if currentTab == "boss" then showTab("boss") end
+            updateCounter(eggCount, bossCount)
+            print(string.format("[Scanner] MiniBoss #%d | %s | UID: %s", bossCount, roomStatus, tostring(chestUID)))
+        end
+    end
+end
+
+-- ============================================================
+-- STEP 4: Snake path at FLOOR level
+-- ============================================================
+local waypoints = {}
+local rowIndex = 0
+
+for x = bMin.X, bMax.X, STEP do
+    local zStart, zEnd, zStep
+    if rowIndex % 2 == 0 then
+        zStart, zEnd, zStep = bMin.Z, bMax.Z, STEP
+    else
+        zStart, zEnd, zStep = bMax.Z, bMin.Z, -STEP
+    end
+    for z = zStart, zEnd, zStep do
+        table.insert(waypoints, Vector3.new(x, FLY_Y, z))
+    end
+    rowIndex += 1
+end
+
+setStatus(string.format("⟳  Flying %d waypoints at floor level...", #waypoints), Color3.fromRGB(160, 120, 220))
+
+-- ============================================================
+-- STEP 5: Fly + scan all rooms every tick
+-- ============================================================
+local waypointIndex = 1
+local lastScan = 0
+local done = false
+
+local conn = RunService.Heartbeat:Connect(function(dt)
+    if done or waypointIndex > #waypoints then
+        done = true
+        return
+    end
+
+    local target = waypoints[waypointIndex]
+    local current = hrp.Position
+    local direction = (target - current)
+    local dist = direction.Magnitude
+    local moveStep = FLY_SPEED * dt
+
+    if dist <= moveStep then
+        hrp.CFrame = CFrame.new(target)
+        waypointIndex += 1
+        local pct = waypointIndex / #waypoints
+        setProgress(pct)
+        setStatus(
+            string.format("⟳  %d%%  |  🥚 %d  💀 %d", math.floor(pct * 100), eggCount, bossCount),
+            Color3.fromRGB(160, 120, 220)
+        )
+    else
+        local newPos = current + direction.Unit * moveStep
+        hrp.CFrame = CFrame.new(newPos, newPos + direction.Unit)
+    end
+
+    -- Scan ALL rooms — no distance filter
+    local now = tick()
+    if now - lastScan >= SCAN_INTERVAL then
+        scanAllRooms()
+        lastScan = now
+    end
+end)
+
+repeat task.wait(0.5) until done
+conn:Disconnect()
+
+hrp.Anchored = false
+humanoid.PlatformStand = false
+
+setProgress(1)
+setStatus(string.format("✓  Done!  🥚 %d eggs  💀 %d boss rooms", eggCount, bossCount), Color3.fromRGB(80, 220, 120))
+updateCounter(eggCount, bossCount)
+showTab("eggs")
+
+local out = {}
+for k in pairs(foundEggs) do table.insert(out, k) end
+table.sort(out)
+setclipboard(#out > 0 and table.concat(out, "\n") or "No eggs found.")
+print("[Scanner] Done! Clipboard updated.")
+
+-- ============================================================
+-- STEP 6: Boss chest handler
+-- ============================================================
+if bossCount == 0 then return end
+
+task.spawn(function()
+    for _, data in pairs(foundBossRooms) do
+        local bossRoom = data.room
+        local chestUID = data.uid
+
+        local respawnTS = bossRoom:GetAttribute("RespawnTimestamp")
+        local serverTime = workspace:GetServerTimeNow()
+        if respawnTS and respawnTS > serverTime then
+            local w = respawnTS - serverTime
+            setStatus(string.format("⏳  Respawn: %.0fs...", w), Color3.fromRGB(220, 160, 60))
+            task.wait(w + 1)
+        end
+
+        setStatus("⟶  Moving to BREAK_ZONE...", Color3.fromRGB(160, 120, 220))
+        humanoid:MoveTo(data.breakPos)
+        humanoid.MoveToFinished:Wait()
+
+        if not chestUID then
+            setStatus("⟳  Waiting for BossChestUID...", Color3.fromRGB(160, 120, 220))
+            repeat task.wait(POLL_INTERVAL)
+                chestUID = bossRoom:GetAttribute("BossChestUID")
+            until chestUID ~= nil
+        end
+
+        setStatus("⚔  Waiting for boss defeat...", Color3.fromRGB(220, 100, 60))
+        repeat task.wait(POLL_INTERVAL) until bossRoom:GetAttribute("BossDefeatedAt") ~= nil
+        setStatus("✓  Boss defeated!", Color3.fromRGB(80, 220, 120))
+
+        local chest, t0 = nil, tick()
+        repeat task.wait(0.1)
+            chest = BreakableCmds.Get(chestUID)
+        until chest ~= nil or tick() - t0 > 5
+
+        if not chest then
+            setStatus("✗  Chest not found, skipping.", Color3.fromRGB(220, 80, 80))
+            continue
+        end
+
+        setStatus("⟳  Waiting for chest to reach zone...", Color3.fromRGB(160, 120, 220))
+        repeat
+            task.wait(0.2)
+            local targetPos = bossRoom:GetAttribute("BossChestTarget")
+            if not targetPos then break end
+        until (chest:GetPivot().Position - bossRoom:GetAttribute("BossChestTarget")).Magnitude < 14
+
+        local chestPos = chest:GetPivot().Position
+        humanoid:MoveTo(chestPos)
+        humanoid.MoveToFinished:Wait()
+
+        repeat task.wait(0.1)
+            chestPos = chest:GetPivot().Position
+        until (hrp.Position - chestPos).Magnitude <= INTERACT_RANGE
+
+        local interactRemote = game.ReplicatedStorage:FindFirstChild("BreakableInteract", true)
+            or game.ReplicatedStorage:FindFirstChild("Interact", true)
+            or game.ReplicatedStorage:FindFirstChild("BreakCmds", true)
+
+        if interactRemote and interactRemote:IsA("RemoteEvent") then
+            interactRemote:FireServer(chestUID)
+            setStatus("✓  Chest opened!", Color3.fromRGB(80, 220, 120))
+        else
+            local prompt = chest:FindFirstChildOfClass("ProximityPrompt", true)
+            if prompt then
+                fireproximityprompt(prompt)
+                setStatus("✓  Chest prompt fired!", Color3.fromRGB(80, 220, 120))
+            else
+                setStatus("✗  No interact found — spy the remote.", Color3.fromRGB(220, 80, 80))
+            end
+        end
+
+        task.wait(2)
+    end
+
+    setStatus("✓  All boss rooms handled!", Color3.fromRGB(80, 220, 120))
+end)
