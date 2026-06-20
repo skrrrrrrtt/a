@@ -1,0 +1,33 @@
+local farmEggsDebounce = false
+
+local function clickPosition(x, y)
+    VirtualUser:CreateButton1Down(Vector2.new(x, y))
+    VirtualUser:CreateButton1Up(Vector2.new(x, y))
+end
+
+local function farmEggs()
+    if config.eggSettings.openEggs and not farmEggsDebounce then
+        farmEggsDebounce = true
+
+        local splitName = string.split(config.eggSettings.selectedEgg, " | ")
+
+        Network["Eggs_RequestPurchase"]:InvokeServer(
+            splitName[2],
+            config.eggSettings.openAmount
+        )
+
+        repeat
+            task.wait()
+            clickPosition(math.huge, math.huge)
+        until not workspace.CurrentCamera:FindFirstChild("Eggs")
+            or not config.eggSettings.openEggs
+
+        farmEggsDebounce = false
+    end
+end
+
+task.spawn(function()
+    while task.wait() do
+        farmEggs()
+    end
+end)
