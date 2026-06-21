@@ -1,0 +1,177 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local Workspace = game:GetService("Workspace")
+
+local CONFIG = {
+    UPDATE_INTERVAL = 0.3,
+}
+
+local TARGETS = {
+    GameMastersStage = true,
+    EggRoom = true,
+    DeepLockedEggRoom = true,
+    FreeEggRoom = true,
+    DeepFreeEggRoom1 = true,
+    DeepFreeEggRoom2 = true,
+    ParkourLaserEggRoom = true,
+}
+
+local FoundRooms = {}
+local RememberedPositions = {}
+
+local function getGeneratedBackrooms()
+    local things = Workspace:FindFirstChild("__THINGS")
+    if not things then return nil end
+    local container = things:FindFirstChild("__INSTANCE_CONTAINER")
+    if not container then return nil end
+    local active = container:FindFirstChild("Active")
+    if not active then return nil end
+    local backrooms = active:FindFirstChild("Backrooms")
+    if not backrooms then return nil end
+    return backrooms:FindFirstChild("GeneratedBackrooms")
+end
+
+local function getRoomCenter(room)
+    if not room then return nil end
+    if room:IsA("Model") then
+        local totalX, totalY, totalZ = 0, 0, 0
+        local count = 0
+        for _, child in ipairs(room:GetDescendants()) do
+            if child:IsA("BasePart") then
+                totalX = totalX + child.Position.X
+                totalY = totalY + child.Position.Y
+                totalZ = totalZ + child.Position.Z
+                count = count + 1
+            end
+        end
+        if count > 0 then
+            return Vector3.new(totalX / count, totalY / count, totalZ / count)
+        end
+        local pivot = room:GetPivot()
+        if pivot then return pivot.Position end
+    end
+    if room:IsA("BasePart") then
+        return room.Position
+    end
+    return nil
+end
+
+local function getPositionKey(pos)
+    if not pos then return nil end
+    return string.format("%.0f_%.0f_%.0f", pos.X, pos.Y, pos.Z)
+end
+
+local function scanForRooms()
+    local generatedBackrooms = getGeneratedBackrooms()
+    if not generatedBackrooms then return end
+    
+    local currentPositions = {}
+    local newRooms = {}
+    
+    for _, obj in ipairs(generatedBackrooms:GetChildren()) do
+        if TARGETS[obj.Name] then
+            local pos = getRoomCenter(obj)
+            if pos then
+                local posKey = getPositionKey(pos)
+                currentPositions[posKey] = true
+                
+                if not FoundRooms[posKey] then
+                    FoundRooms[posKey] = {
+                        Object = obj,
+                        Position = pos,
+                        Name = obj.Name
+                    }
+                    table.insert(newRooms, {name = obj.Name, pos = pos})
+                    print(string.format("room spawned %s | Position: %.0f, %.0f, %.0f", obj.Name, pos.X, pos.Y, pos.Z))
+                else
+                    FoundRooms[posKey].Object = obj
+                    FoundRooms[posKey].Position = pos
+                end
+            end
+        end
+    end
+    
+    for posKey, data in pairs(FoundRooms) do
+        if not currentPositions[posKey] then
+            local pos = data.Position
+            if pos then
+                RememberedPositions[posKey] = {
+                    Position = pos,
+                    Time = tick(),
+                    Name = data.Name
+                }
+                print(string.format("room despawned %s | Last Position: %.0f, %.0f, %.0f | Position Saved", data.Name, pos.X, pos.Y, pos.Z))
+            end
+            FoundRooms[posKey] = nil
+        end
+    end
+    
+    local currentTime = tick()
+    for posKey, data in pairs(RememberedPositions) do
+        if currentTime - data.Time > 300 then
+            RememberedPositions[posKey] = nil
+        end
+    end
+end
+
+local function watchGeneratedBackrooms(folder)
+    if not folder then return end
+    folder.ChildAdded:Connect(function(room)
+        if TARGETS[room.Name] then
+            task.wait(0.1)
+            scanForRooms()
+        end
+    end)
+    folder.ChildRemoved:Connect(function(room)
+        if TARGETS[room.Name] then
+            task.wait(0.1)
+            scanForRooms()
+        end
+    end)
+end
+
+local function startActiveScanning()
+    task.spawn(function()
+        while task.wait(CONFIG.UPDATE_INTERVAL) do
+            scanForRooms()
+        end
+    end)
+end
+
+local function initialize()
+    local generatedBackrooms = getGeneratedBackrooms()
+    if generatedBackrooms then
+        print("Found GeneratedBackrooms")
+        scanForRooms()
+        watchGeneratedBackrooms(generatedBackrooms)
+        startActiveScanning()
+    else
+        print("Waiting for GeneratedBackrooms")
+        local function waitForFolder()
+            local things = Workspace:FindFirstChild("__THINGS")
+            if things then
+                local container = things:FindFirstChild("__INSTANCE_CONTAINER")
+                if container then
+                    local active = container:FindFirstChild("Active")
+                    if active then
+                        local backrooms = active:FindFirstChild("Backrooms")
+                        if backrooms then
+                            backrooms.ChildAdded:Connect(function(child)
+                                if child.Name == "GeneratedBackrooms" then
+                                    task.wait(0.5)
+                                    scanForRooms()
+                                    watchGeneratedBackrooms(child)
+                                    startActiveScanning()
+                                end
+                            end)
+                        end
+                    end
+                end
+            end
+        end
+        waitForFolder()
+    end
+end
+
+initialize()
