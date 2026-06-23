@@ -1,0 +1,462 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+local LocalPlayer = Players.LocalPlayer
+local Workspace = game:GetService("Workspace")
+
+local CONFIG = {
+    UPDATE_INTERVAL = 0.3,
+}
+
+local TARGETS = {
+    GameMastersStage = true,
+    EggRoom = true,
+    DeepLockedEggRoom = true,
+    FreeEggRoom = true,
+    DeepFreeEggRoom1 = true,
+    DeepFreeEggRoom2 = true,
+    ParkourLaserEggRoom = true,
+}
+
+local FoundRooms = {}
+local FoundLockedDoors = {}
+local IsDirty = false -- Flag to update GUI only when needed
+
+-- ==========================================
+-- GUI CREATION
+-- ==========================================
+
+-- Protect GUI from being deleted by game anti-cheats
+local parentGui = CoreGui:FindFirstChild("EggTeleportGui")
+if parentGui then parentGui:Destroy() end
+parentGui = Instance.new("ScreenGui")
+parentGui.Name = "EggTeleportGui"
+parentGui.ResetOnSpawn = false
+parentGui.Parent = CoreGui
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 300, 0, 400)
+MainFrame.Position = UDim2.new(0, 50, 0.5, -200)
+MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Parent = parentGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 8)
+UICorner.Parent = MainFrame
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size = UDim2.new(1, 0, 0, 30)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Text = "Egg Finder"
+TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+TitleLabel.Font = Enum.Font.SourceSansBold
+TitleLabel.TextSize = 18
+TitleLabel.Parent = MainFrame
+
+local CloseButton = Instance.new("TextButton")
+CloseButton.Size = UDim2.new(0, 30, 0, 30)
+CloseButton.Position = UDim2.new(1, -30, 0, 0)
+CloseButton.BackgroundTransparency = 1
+CloseButton.Text = "X"
+CloseButton.TextColor3 = Color3.fromRGB(255, 100, 100)
+CloseButton.Font = Enum.Font.SourceSansBold
+CloseButton.TextSize = 18
+CloseButton.Parent = MainFrame
+
+CloseButton.MouseButton1Click:Connect(function()
+    parentGui.Enabled = not parentGui.Enabled
+end)
+
+-- Draggable GUI
+do
+    local dragging, dragInput, dragStart, startPos
+    
+    local function update(input)
+        local delta = input.Position - dragStart
+        MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+    
+    TitleLabel.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = MainFrame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    
+    TitleLabel.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    
+    TitleLabel.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            if dragging and input then
+                update(input)
+            end
+        end
+    end)
+end
+
+local ScrollingFrame = Instance.new("ScrollingFrame")
+ScrollingFrame.Size = UDim2.new(1, -20, 1, -45)
+ScrollingFrame.Position = UDim2.new(0, 10, 0, 40)
+ScrollingFrame.BackgroundTransparency = 1
+ScrollingFrame.ScrollBarThickness = 4
+ScrollingFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+ScrollingFrame.Parent = MainFrame
+
+local UIListLayout = Instance.new("UIListLayout")
+UIListLayout.Padding = UDim.new(0, 5)
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Parent = ScrollingFrame
+
+-- Toggle GUI with Right Shift
+local UserInputService = game:GetService("UserInputService")
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not gameProcessed and input.KeyCode == Enum.KeyCode.RightShift then
+        parentGui.Enabled = not parentGui.Enabled
+    end
+end)
+
+-- ==========================================
+-- TELEPORT & GUI UPDATE LOGIC
+-- ==========================================
+
+local function teleportToPosition(pos)
+    local character = LocalPlayer.Character
+    if character and character:FindFirstChild("HumanoidRootPart") and pos then
+        -- Offset Y by 3 studs so you don't get stuck inside the floor
+        character.HumanoidRootPart.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+    end
+end
+
+local function updateGUI()
+    -- Clear old buttons
+    for _, child in ipairs(ScrollingFrame:GetChildren()) do
+        if child:IsA("TextButton") then
+            child:Destroy()
+        end
+    end
+    
+    local layoutOrder = 1
+    
+    -- Add Active Egg Rooms
+    for posKey, data in pairs(FoundRooms) do
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, -5, 0, 40)
+        btn.BackgroundColor3 = Color3.fromRGB(45, 80, 45)
+        btn.TextColor3 = Color3.fromRGB(200, 255, 200)
+        btn.Font = Enum.Font.SourceSans
+        btn.TextSize = 13
+        btn.TextWrapped = true
+        
+        -- Display name with multiplier
+        local multiplierText = data.Multiplier and "x" .. data.Multiplier or "x?"
+        btn.Text = "🥚 EGG | " .. data.Name .. "\n" .. multiplierText
+        
+        btn.LayoutOrder = layoutOrder
+        layoutOrder += 1
+        
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 6)
+        corner.Parent = btn
+        
+        btn.Parent = ScrollingFrame
+        
+        btn.MouseButton1Click:Connect(function()
+            teleportToPosition(data.Position)
+        end)
+    end
+
+    -- Add Locked Doors
+    for posKey, data in pairs(FoundLockedDoors) do
+        local btn = Instance.new("TextButton")
+        btn.Size = UDim2.new(1, -5, 0, 35)
+        btn.BackgroundColor3 = Color3.fromRGB(80, 45, 45)
+        btn.TextColor3 = Color3.fromRGB(255, 150, 150)
+        btn.Font = Enum.Font.SourceSans
+        btn.TextSize = 13
+        btn.TextWrapped = true
+        btn.Text = "🔒 DOOR | " .. data.Name
+        btn.LayoutOrder = layoutOrder
+        layoutOrder += 1
+        
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 6)
+        corner.Parent = btn
+        
+        btn.Parent = ScrollingFrame
+        
+        btn.MouseButton1Click:Connect(function()
+            teleportToPosition(data.Position)
+        end)
+    end
+    
+    -- Update Canvas Size
+    ScrollingFrame.CanvasSize = UDim2.new(0, 0, 0, UIListLayout.AbsoluteContentSize.Y + 10)
+end
+
+-- ==========================================
+-- CORE SCRIPT LOGIC
+-- ==========================================
+
+local function getGeneratedBackrooms()
+    local things = Workspace:FindFirstChild("__THINGS")
+    if not things then return nil end
+    local container = things:FindFirstChild("__INSTANCE_CONTAINER")
+    if not container then return nil end
+    local active = container:FindFirstChild("Active")
+    if not active then return nil end
+    local backrooms = active:FindFirstChild("Backrooms")
+    if not backrooms then return nil end
+    return backrooms:FindFirstChild("GeneratedBackrooms")
+end
+
+local function getRoomCenter(room)
+    if not room then return nil end
+    if room:IsA("Model") then
+        local totalX, totalY, totalZ = 0, 0, 0
+        local count = 0
+        for _, child in ipairs(room:GetDescendants()) do
+            if child:IsA("BasePart") then
+                totalX = totalX + child.Position.X
+                totalY = totalY + child.Position.Y
+                totalZ = totalZ + child.Position.Z
+                count = count + 1
+            end
+        end
+        if count > 0 then
+            return Vector3.new(totalX / count, totalY / count, totalZ / count)
+        end
+        local pivot = room:GetPivot()
+        if pivot then return pivot.Position end
+    end
+    if room:IsA("BasePart") then
+        return room.Position
+    end
+    return nil
+end
+
+local function getPositionKey(pos)
+    if not pos then return nil end
+    return string.format("%.0f_%.0f_%.0f", pos.X, pos.Y, pos.Z)
+end
+
+-- Function to extract multiplier from room object
+local function getMultiplier(obj)
+    if not obj then return 1 end
+    
+    local multiplier = 1
+    
+    -- Check all descendants for multiplier values
+    for _, child in ipairs(obj:GetDescendants()) do
+        if child:IsA("IntValue") then
+            if child.Name:lower():find("mult") then
+                return child.Value
+            end
+        end
+        if child:IsA("NumberValue") then
+            if child.Name:lower():find("mult") then
+                return math.floor(child.Value)
+            end
+        end
+    end
+    
+    -- Check direct children
+    local multiplierObj = obj:FindFirstChild("Multiplier")
+    if multiplierObj and multiplierObj:IsA("ValueBase") then
+        return multiplierObj.Value
+    end
+    
+    -- Check attributes
+    if obj:GetAttribute("Multiplier") then
+        return obj:GetAttribute("Multiplier")
+    end
+    
+    -- Try to find any IntValue in children
+    for _, child in ipairs(obj:GetChildren()) do
+        if child:IsA("IntValue") then
+            return child.Value
+        end
+    end
+    
+    return 1
+end
+
+local function scanForRooms()
+    local generatedBackrooms = getGeneratedBackrooms()
+    if not generatedBackrooms then return end
+    
+    local currentPositions = {}
+    
+    for _, obj in ipairs(generatedBackrooms:GetChildren()) do
+        if TARGETS[obj.Name] then
+            local pos = getRoomCenter(obj)
+            if pos then
+                local posKey = getPositionKey(pos)
+                currentPositions[posKey] = true
+                
+                -- Extract multiplier from the room object
+                local multiplier = getMultiplier(obj)
+                
+                if not FoundRooms[posKey] then
+                    FoundRooms[posKey] = {
+                        Object = obj,
+                        Position = pos,
+                        Name = obj.Name,
+                        Multiplier = multiplier
+                    }
+                    IsDirty = true
+                    print(string.format("[EGG] %s spawned | Multiplier: x%d | Pos: %.0f, %.0f, %.0f", obj.Name, multiplier, pos.X, pos.Y, pos.Z))
+                else
+                    local oldMult = FoundRooms[posKey].Multiplier
+                    FoundRooms[posKey].Object = obj
+                    FoundRooms[posKey].Position = pos
+                    FoundRooms[posKey].Multiplier = multiplier
+                    
+                    if oldMult ~= multiplier then
+                        IsDirty = true
+                    end
+                end
+            end
+        end
+    end
+    
+    -- Clean up rooms that no longer exist
+    for posKey, data in pairs(FoundRooms) do
+        if not currentPositions[posKey] then
+            FoundRooms[posKey] = nil
+            IsDirty = true
+        end
+    end
+    
+    if IsDirty then
+        IsDirty = false
+        updateGUI()
+    end
+end
+
+-- Scan for locked doors in the workspace
+local function scanForLockedDoors()
+    local doorPositions = {}
+    
+    -- Search entire workspace for locked doors
+    local function searchForDoors(parent)
+        for _, obj in ipairs(parent:GetChildren()) do
+            -- Look for objects with "lock" or "door" in the name
+            local lowerName = obj.Name:lower()
+            if (lowerName:find("lock") or lowerName:find("door")) and obj:IsA("BasePart") then
+                local pos = obj.Position
+                local posKey = getPositionKey(pos)
+                
+                if not doorPositions[posKey] then
+                    doorPositions[posKey] = true
+                    
+                    if not FoundLockedDoors[posKey] then
+                        FoundLockedDoors[posKey] = {
+                            Position = pos,
+                            Name = obj.Name
+                        }
+                        IsDirty = true
+                        print(string.format("[DOOR] %s found | Pos: %.0f, %.0f, %.0f", obj.Name, pos.X, pos.Y, pos.Z))
+                    end
+                end
+            end
+            
+            -- Recursively search children
+            if obj:IsA("Model") or obj:IsA("Folder") then
+                searchForDoors(obj)
+            end
+        end
+    end
+    
+    searchForDoors(Workspace)
+    
+    -- Clean up doors that no longer exist
+    for posKey, data in pairs(FoundLockedDoors) do
+        if not doorPositions[posKey] then
+            FoundLockedDoors[posKey] = nil
+            IsDirty = true
+        end
+    end
+end
+
+local function watchGeneratedBackrooms(folder)
+    if not folder then return end
+    folder.ChildAdded:Connect(function(room)
+        if TARGETS[room.Name] then
+            task.wait(0.1)
+            scanForRooms()
+        end
+    end)
+    folder.ChildRemoved:Connect(function(room)
+        if TARGETS[room.Name] then
+            task.wait(0.1)
+            scanForRooms()
+        end
+    end)
+end
+
+local function startActiveScanning()
+    task.spawn(function()
+        while task.wait(CONFIG.UPDATE_INTERVAL) do
+            scanForRooms()
+        end
+    end)
+    
+    -- Scan for locked doors every second
+    task.spawn(function()
+        while task.wait(1) do
+            scanForLockedDoors()
+        end
+    end)
+end
+
+local function initialize()
+    local generatedBackrooms = getGeneratedBackrooms()
+    if generatedBackrooms then
+        print("[INIT] Found GeneratedBackrooms")
+        scanForRooms()
+        scanForLockedDoors()
+        watchGeneratedBackrooms(generatedBackrooms)
+        startActiveScanning()
+    else
+        print("[INIT] Waiting for GeneratedBackrooms")
+        local function waitForFolder()
+            local things = Workspace:FindFirstChild("__THINGS")
+            if things then
+                local container = things:FindFirstChild("__INSTANCE_CONTAINER")
+                if container then
+                    local active = container:FindFirstChild("Active")
+                    if active then
+                        local backrooms = active:FindFirstChild("Backrooms")
+                        if backrooms then
+                            backrooms.ChildAdded:Connect(function(child)
+                                if child.Name == "GeneratedBackrooms" then
+                                    task.wait(0.5)
+                                    scanForRooms()
+                                    scanForLockedDoors()
+                                    watchGeneratedBackrooms(child)
+                                    startActiveScanning()
+                                end
+                            end)
+                        end
+                    end
+                end
+            end
+        end
+        waitForFolder()
+    end
+end
+
+initialize()
